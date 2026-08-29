@@ -1,0 +1,25 @@
+# ------------------------------------------------------------ desktop (Electron)
+node_modules/
+dist/
+src/renderer/vendor/
+
+# ---------------------------------------------------------------- Fire TV (Gradle)
+firetv/.gradle/
+firetv/build/
+firetv/app/build/
+firetv/local.properties
+firetv/.kotlin/
+firetv/captures/
+.cxx/
+
+# Signing keys never belong in a public repo.
+*.jks
+*.keystore
+
+# ------------------------------------------------------------------------ tooling
+.idea/
+*.iml
+.DS_Store
+Thumbs.db
+*.log
+.claude/

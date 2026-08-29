@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  IPTV panels are almost always plain http:// on a non-standard port, and small
+  panels frequently use self-signed certificates. Cleartext has to be allowed or
+  nothing plays at all on Android 9+.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="user" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

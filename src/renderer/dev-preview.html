@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="en" data-accent="gold">
+<head>
+  <meta charset="utf-8" />
+  <title>Aurum IPTV — dev preview</title>
+  <link rel="stylesheet" href="styles/base.css" />
+  <link rel="stylesheet" href="styles/shell.css" />
+  <link rel="stylesheet" href="styles/components.css" />
+  <link rel="stylesheet" href="styles/views.css" />
+  <link rel="stylesheet" href="styles/player.css" />
+</head>
+<body>
+  <!-- ===================================================== app shell ==== -->
+  <div id="app" class="hidden">
+    <header class="titlebar">
+      <div class="titlebar__brand">
+        <span class="titlebar__mark">A</span>
+        <span>Aurum</span>
+        <span class="titlebar__sub">IPTV</span>
+      </div>
+      <div class="titlebar__spacer"></div>
+      <div class="titlebar__status" id="globalStatus" data-state="idle">
+        <span class="dot"></span>
+        <span class="truncate" id="globalStatusText">Ready</span>
+      </div>
+      <nav class="wincontrols">
+        <button data-win="min" title="Minimise" aria-label="Minimise">
+          <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.2"><line x1="1" y1="6" x2="11" y2="6"/></svg>
+        </button>
+        <button data-win="max" title="Maximise" aria-label="Maximise">
+          <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.2"><rect x="1.5" y="1.5" width="9" height="9"/></svg>
+        </button>
+        <button data-win="close" title="Close" aria-label="Close">
+          <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.2"><line x1="1.5" y1="1.5" x2="10.5" y2="10.5"/><line x1="10.5" y1="1.5" x2="1.5" y2="10.5"/></svg>
+        </button>
+      </nav>
+    </header>
+
+    <div class="shell">
+      <aside class="sidebar" id="sidebar">
+        <nav id="nav"></nav>
+        <div class="sidebar__spacer"></div>
+        <button class="sidebar__account" id="accountBtn">
+          <span class="sidebar__avatar" id="accountAvatar">·</span>
+          <span class="sidebar__account-text truncate">
+            <span class="sidebar__account-name truncate" id="accountName">Not signed in</span>
+            <span class="sidebar__account-meta truncate" id="accountMeta">—</span>
+          </span>
+        </button>
+      </aside>
+
+      <main class="main">
+        <div class="topbar">
+          <button class="iconbtn" id="toggleSidebar" title="Toggle sidebar (Ctrl+B)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+              <line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/>
+            </svg>
+          </button>
+
+          <div class="search">
+            <div class="search__field">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                <circle cx="11" cy="11" r="7"/><line x1="20" y1="20" x2="16.7" y2="16.7"/>
+              </svg>
+              <input id="searchInput" type="text" placeholder="Search channels, movies, series and the TV guide…" spellcheck="false" autocomplete="off" />
+              <button class="iconbtn hidden" id="searchClear" style="width:26px;height:26px">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/></svg>
+              </button>
+              <span class="kbd">Ctrl K</span>
+            </div>
+          </div>
+
+          <div class="grow"></div>
+
+          <button class="iconbtn" id="refreshBtn" title="Refresh catalogue">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/>
+              <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+            </svg>
+          </button>
+        </div>
+
+        <div class="content" id="content"></div>
+      </main>
+    </div>
+  </div>
+
+  <!-- ========================================================= login ==== -->
+  <section class="login" id="login">
+    <div class="login__art">
+      <div class="login__art-grid"></div>
+      <div class="login__art-copy">
+        <h2>Every channel.<br />Every film.<br /><b>One elegant place.</b></h2>
+        <p>Sign in with your Xtream Codes line to unlock live television, a full programme guide, movies and box sets — all played back in-app.</p>
+        <div class="login__features">
+          <span class="login__feature">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="20" height="15" rx="2"/><polyline points="17 2 12 7 7 2"/></svg>
+            Live TV &amp; EPG
+          </span>
+          <span class="login__feature">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m4 4 16 8-16 8z"/></svg>
+            Films &amp; box sets
+          </span>
+          <span class="login__feature">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
+            Built-in player
+          </span>
+        </div>
+      </div>
+    </div>
+
+    <div class="login__panel">
+      <div class="login__logo">
+        <span class="mark">A</span>
+        <span>
+          <span class="name" style="display:block">Aurum IPTV</span>
+          <span class="tag">Xtream Codes</span>
+        </span>
+      </div>
+
+      <h1 style="font-size:23px;margin-bottom:6px">Sign in to your line</h1>
+      <p class="dim" style="font-size:13px;margin-bottom:26px">Your credentials are encrypted with Windows Data Protection and never leave this machine.</p>
+
+      <form class="login__form" id="loginForm" autocomplete="off">
+        <div class="login__error hidden" id="loginError">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="13"/><line x1="12" y1="16.5" x2="12" y2="16.6"/></svg>
+          <span id="loginErrorText"></span>
+        </div>
+
+        <div class="field">
+          <label for="loginServer">Server URL</label>
+          <div class="field__input">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15 15 0 0 1 0 20 15 15 0 0 1 0-20"/></svg>
+            <input id="loginServer" type="text" placeholder="http://your-provider.com:8080" spellcheck="false" />
+          </div>
+          <span class="field__hint">You can paste a full <code>get.php</code> or <code>m3u_plus</code> link — the username and password will be filled in for you.</span>
+        </div>
+
+        <div class="field">
+          <label for="loginUser">Username</label>
+          <div class="field__input">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+            <input id="loginUser" type="text" spellcheck="false" placeholder="Your line username" />
+          </div>
+        </div>
+
+        <div class="field">
+          <label for="loginPass">Password</label>
+          <div class="field__input">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+            <input id="loginPass" type="password" placeholder="Your line password" />
+            <button type="button" class="iconbtn" id="togglePass" style="width:28px;height:28px" title="Show password">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg>
+            </button>
+          </div>
+        </div>
+
+        <label class="login__remember" id="rememberWrap">
+          <span class="checkbox on" id="rememberBox">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+          </span>
+          Keep me signed in on this PC
+        </label>
+
+        <button class="btn btn--primary btn--lg btn--block" type="submit" id="loginSubmit" style="margin-top:6px">
+          <span id="loginSubmitText">Connect</span>
+        </button>
+      </form>
+
+      <p class="login__foot">
+        Aurum is a player only. It does not provide, host or resell any channels — you need your own subscription from a provider.
+      </p>
+    </div>
+  </section>
+
+  <!-- ======================================================== player ==== -->
+  <section class="player" id="player">
+    <div class="player__stage" id="playerStage" data-ar="auto">
+      <video id="video" class="player__video" data-fit="contain" playsinline></video>
+    </div>
+
+    <div class="player__loading" id="playerLoading">
+      <div class="spinner spinner--lg"></div>
+      <div class="text" id="playerLoadingText">Connecting…</div>
+    </div>
+
+    <div class="player__error" id="playerError">
+      <div class="icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12" y2="17.1"/></svg>
+      </div>
+      <h3 id="playerErrorTitle">Playback failed</h3>
+      <p id="playerErrorMsg"></p>
+      <div class="actions">
+        <button class="btn btn--primary" id="playerRetry">Try again</button>
+        <button class="btn" id="playerSwitchFormat">Switch stream format</button>
+        <button class="btn btn--ghost" id="playerErrorClose">Close</button>
+      </div>
+    </div>
+
+    <div class="osd" id="osd"><span id="osdContent"></span></div>
+
+    <div class="zap" id="zap">
+      <span class="zap__num" id="zapNum"></span>
+      <span class="zap__logo" id="zapLogo"></span>
+      <span>
+        <span class="zap__name" id="zapName"></span>
+        <span class="zap__now" id="zapNow"></span>
+      </span>
+    </div>
+
+    <div class="stats-hud" id="statsHud">
+      <h4>Stream statistics</h4>
+      <div id="statsBody"></div>
+    </div>
+
+    <aside class="player__zaplist" id="zapList">
+      <div class="player__zaplist-head">
+        <h3>Channels</h3>
+        <button class="iconbtn" id="zapListClose">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/></svg>
+        </button>
+      </div>
+      <div class="player__zaplist-scroll thin-scroll" id="zapListBody"></div>
+    </aside>
+
+    <div class="player__chrome" id="playerChrome">
+      <div class="player__top">
+        <button class="player__back" id="playerBack" title="Back (Esc)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+        </button>
+        <div class="player__titles">
+          <div class="player__title" id="playerTitle">—</div>
+          <div class="player__subtitle" id="playerSubtitle"></div>
+        </div>
+        <div class="player__top-actions">
+          <button class="iconbtn" id="btnFavourite" title="Add to favourites (F)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-7.5-4.6-9.5-9A5.3 5.3 0 0 1 12 6.5 5.3 5.3 0 0 1 21.5 12c-2 4.4-9.5 9-9.5 9z"/></svg>
+          </button>
+          <button class="iconbtn" id="btnStats" title="Stream statistics (I)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+          </button>
+        </div>
+      </div>
+
+      <div class="player__bottom">
+        <div class="seek" id="seek">
+          <div class="seek__track">
+            <div class="seek__buffer" id="seekBuffer"></div>
+            <div class="seek__played" id="seekPlayed"></div>
+            <div class="seek__knob" id="seekKnob"></div>
+          </div>
+          <div class="seek__tip" id="seekTip">00:00</div>
+        </div>
+
+        <div class="controls">
+          <button class="ctl ctl--play" id="btnPlay" title="Play/Pause (Space)"></button>
+          <button class="ctl" id="btnPrevChan" title="Previous channel (Page Up)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="18 6 10 12 18 18"/><line x1="6" y1="6" x2="6" y2="18"/></svg>
+          </button>
+          <button class="ctl" id="btnNextChan" title="Next channel (Page Down)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 6 14 12 6 18"/><line x1="18" y1="6" x2="18" y2="18"/></svg>
+          </button>
+          <button class="ctl" id="btnBack10" title="Back 10s (←)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
+          </button>
+          <button class="ctl" id="btnFwd10" title="Forward 10s (→)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+          </button>
+
+          <div class="volume" id="volume">
+            <button class="ctl" id="btnMute" title="Mute (M)"></button>
+            <div class="volume__slider">
+              <input type="range" id="volSlider" min="0" max="1" step="0.01" value="1" />
+            </div>
+          </div>
+
+          <div class="player__time">
+            <span id="timeCur">00:00</span><span class="sep">/</span><span id="timeDur">--:--</span>
+          </div>
+
+          <span class="live-pill hidden" id="livePill"><span class="dot"></span>LIVE</span>
+
+          <div class="player__spacer"></div>
+
+          <button class="ctl ctl--text" id="btnQuality" title="Quality">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 20v-6M6 20v-3M18 20v-9"/><rect x="3" y="3" width="18" height="18" rx="2"/></svg>
+            <span class="ctl__label" id="qualityLabel">Auto</span>
+          </button>
+          <button class="ctl" id="btnAudio" title="Audio track">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 18v-6a9 9 0 0 1 18 0v6"/><path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"/></svg>
+          </button>
+          <button class="ctl" id="btnSubs" title="Subtitles (C)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M7 15h3M13 15h4M7 11h2M12 11h5"/></svg>
+          </button>
+          <button class="ctl" id="btnSettings" title="Player settings">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9c.14.36.4.66.73.87.3.19.65.29 1 .29H21a2 2 0 1 1 0 4h-.09c-.35 0-.7.1-1 .29-.33.21-.59.51-.73.87z"/></svg>
+          </button>
+          <button class="ctl" id="btnZapList" title="Channel list (L)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+          </button>
+          <button class="ctl" id="btnPip" title="Picture in picture (P)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><rect x="12" y="12" width="8" height="6" rx="1" fill="currentColor" stroke="none"/></svg>
+          </button>
+          <button class="ctl" id="btnFullscreen" title="Fullscreen (F11 / double-click)"></button>
+        </div>
+      </div>
+
+      <div class="flyout" id="flyout">
+        <div class="flyout__head">
+          <span class="grow" id="flyoutTitle">Settings</span>
+          <button id="flyoutClose">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/></svg>
+          </button>
+        </div>
+        <div class="flyout__scroll thin-scroll" id="flyoutBody"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ========================================================= modal ==== -->
+  <div class="modal-root" id="modalRoot">
+    <div class="modal__backdrop" id="modalBackdrop"></div>
+    <div class="modal__panel" id="modalPanel">
+      <button class="modal__close" id="modalClose">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/></svg>
+      </button>
+      <div class="modal__scroll thin-scroll" id="modalBody"></div>
+    </div>
+  </div>
+
+  <div class="toasts" id="toasts"></div>
+
+  <!-- boot splash -->
+  <div id="boot" class="center" style="position:fixed;inset:0;z-index:500;background:var(--bg-void);flex-direction:column;gap:20px">
+    <div style="width:52px;height:52px;border-radius:16px;background:linear-gradient(140deg,var(--accent-bright),var(--accent-deep));display:grid;place-items:center;color:var(--accent-ink);font-weight:800;font-size:24px">A</div>
+    <div class="spinner"></div>
+    <div class="dim" style="font-size:12.5px;letter-spacing:.05em" id="bootText">Starting Aurum…</div>
+  </div>
+
+  <script src="dev/mock-api.js"></script>
+  <script src="vendor/hls.js"></script>
+  <script src="vendor/mpegts.js"></script>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

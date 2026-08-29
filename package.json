@@ -1,0 +1,56 @@
+{
+  "name": "aurum-iptv",
+  "productName": "Aurum IPTV",
+  "version": "1.0.0",
+  "description": "A luxury IPTV player for Xtream Codes playlists — live TV, EPG, movies and series with a built-in media player.",
+  "main": "src/main/main.js",
+  "author": "Luke Hammill",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "postinstall": "node scripts/copy-vendor.js",
+    "vendor": "node scripts/copy-vendor.js",
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "build": "electron-builder --win",
+    "pack": "electron-builder --dir"
+  },
+  "build": {
+    "appId": "com.aurum.iptv",
+    "productName": "Aurum IPTV",
+    "directories": {
+      "output": "dist",
+      "buildResources": "assets"
+    },
+    "files": [
+      "src/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "assets/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "Aurum IPTV"
+    }
+  },
+  "dependencies": {
+    "hls.js": "1.7.1",
+    "mpegts.js": "1.8.2"
+  },
+  "devDependencies": {
+    "electron": "^44.0.0",
+    "electron-builder": "^26.15.3"
+  }
+}
