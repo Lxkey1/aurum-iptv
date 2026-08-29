@@ -10,6 +10,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
@@ -24,6 +25,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -47,8 +49,10 @@ fun LoginScreen(state: AppState, error: String?, busy: Boolean) {
     var remember_ by remember { mutableStateOf(true) }
     var showPassword by remember { mutableStateOf(false) }
 
-    val serverFocus = remember { FocusRequester() }
-    LaunchedEffect(Unit) { runCatching { serverFocus.requestFocus() } }
+    // Compose needs an initial focus anchor, otherwise the D-pad just scrolls
+    // the panel. Anchor on the first field's ROW so no keyboard is raised.
+    val firstField = remember { FocusRequester() }
+    LaunchedEffect(Unit) { runCatching { firstField.requestFocus() } }
 
     Row(Modifier.fillMaxSize().background(Aurum.Void)) {
 
@@ -161,7 +165,7 @@ fun LoginScreen(state: AppState, error: String?, busy: Boolean) {
                 },
                 placeholder = "http://your-provider.com:8080",
                 keyboardType = KeyboardType.Uri,
-                modifier = Modifier.focusRequester(serverFocus)
+                rowFocus = firstField
             )
             Text(
                 "You can paste a full get.php or m3u_plus link — the username and password will be filled in for you.",
@@ -250,8 +254,13 @@ private fun Feature(icon: androidx.compose.ui.graphics.vector.ImageVector, label
 }
 
 /**
- * Text entry on a TV: the field takes D-pad focus, and pressing select opens the
- * Fire TV on-screen keyboard against the same field.
+ * Text entry on a TV.
+ *
+ * The field is a focusable plate first and an editor second. D-pad focus alone
+ * must NOT raise the on-screen keyboard — otherwise it covers the form the
+ * moment the screen opens. Pressing SELECT activates the field, which focuses
+ * the real text input and brings up the Fire TV keyboard; leaving the field
+ * puts it back to a plate.
  */
 @Composable
 fun TvTextField(
@@ -262,14 +271,33 @@ fun TvTextField(
     modifier: Modifier = Modifier,
     keyboardType: KeyboardType = KeyboardType.Text,
     masked: Boolean = false,
+    rowFocus: FocusRequester? = null,
     trailing: (@Composable () -> Unit)? = null
 ) {
     var focused by remember { mutableStateOf(false) }
+    var editing by remember { mutableStateOf(false) }
+    // The editor reports focus=false on its very first composition, before the
+    // FocusRequester has run. Without this latch that immediately cancels edit
+    // mode, and SELECT appears to do nothing.
+    var editorHadFocus by remember { mutableStateOf(false) }
+    val editorFocus = remember { FocusRequester() }
+    val keyboard = LocalSoftwareKeyboardController.current
+
+    LaunchedEffect(editing) {
+        if (editing) {
+            editorHadFocus = false
+            runCatching { editorFocus.requestFocus() }
+            keyboard?.show()
+        }
+    }
+
+    val active = focused || editing
+    val shown = if (masked && value.isNotEmpty()) "•".repeat(value.length) else value
 
     Column(modifier) {
         Text(
             label.uppercase(),
-            color = if (focused) Aurum.Accent else Aurum.Text3,
+            color = if (active) Aurum.Accent else Aurum.Text3,
             fontSize = 11.sp,
             fontWeight = FontWeight.Bold,
             letterSpacing = 1.4.sp
@@ -282,28 +310,63 @@ fun TvTextField(
                 .clip(RoundedCornerShape(10.dp))
                 .background(Aurum.Void)
                 .border(
-                    BorderStroke(if (focused) 2.dp else 1.dp, if (focused) Aurum.Accent else Aurum.Border),
+                    BorderStroke(if (active) 2.dp else 1.dp, if (active) Aurum.Accent else Aurum.Border),
                     RoundedCornerShape(10.dp)
                 )
-                .padding(horizontal = 16.dp, vertical = 4.dp)
+                // While idle the whole row is the focus target, so D-pad focus
+                // never touches the text input and never raises the keyboard.
+                .then(
+                    if (editing) Modifier
+                    else Modifier
+                        .then(if (rowFocus != null) Modifier.focusRequester(rowFocus) else Modifier)
+                        .onFocusChangedCompat { focused = it }
+                        .focusable()
+                        .clickable { editing = true }
+                )
+                .padding(horizontal = 16.dp)
         ) {
             Box(Modifier.weight(1f)) {
-                if (value.isEmpty()) {
-                    Text(placeholder, color = Aurum.Text4, style = MaterialTheme.typography.bodyLarge)
+                if (editing) {
+                    BasicTextField(
+                        value = value,
+                        onValueChange = onValueChange,
+                        singleLine = true,
+                        textStyle = MaterialTheme.typography.bodyLarge.copy(color = Aurum.Text),
+                        cursorBrush = SolidColor(Aurum.Accent),
+                        visualTransformation = if (masked) PasswordVisualTransformation() else VisualTransformation.None,
+                        keyboardOptions = KeyboardOptions(keyboardType = keyboardType, imeAction = ImeAction.Done),
+                        keyboardActions = KeyboardActions(onDone = {
+                            editing = false
+                            keyboard?.hide()
+                        }),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 18.dp)
+                            .focusRequester(editorFocus)
+                            .onFocusChangedCompat { hasFocus ->
+                                if (hasFocus) {
+                                    editorHadFocus = true
+                                } else if (editorHadFocus) {
+                                    editorHadFocus = false
+                                    editing = false
+                                }
+                            }
+                    )
+                } else {
+                    Text(
+                        text = shown.ifEmpty { placeholder },
+                        color = if (shown.isEmpty()) Aurum.Text4 else Aurum.Text,
+                        style = MaterialTheme.typography.bodyLarge,
+                        maxLines = 1,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 18.dp)
+                    )
                 }
-                BasicTextField(
-                    value = value,
-                    onValueChange = onValueChange,
-                    singleLine = true,
-                    textStyle = MaterialTheme.typography.bodyLarge.copy(color = Aurum.Text),
-                    cursorBrush = SolidColor(Aurum.Accent),
-                    visualTransformation = if (masked) PasswordVisualTransformation() else VisualTransformation.None,
-                    keyboardOptions = KeyboardOptions(keyboardType = keyboardType, imeAction = ImeAction.Next),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 14.dp)
-                        .onFocusChangedCompat { focused = it }
-                )
+            }
+            if (!editing && focused) {
+                Text("SELECT to edit", color = Aurum.Accent, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.width(10.dp))
             }
             trailing?.invoke()
         }
