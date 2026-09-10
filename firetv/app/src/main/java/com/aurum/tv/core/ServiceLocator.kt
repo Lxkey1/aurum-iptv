@@ -1,6 +1,7 @@
 package com.aurum.tv.core
 
 import android.content.Context
+import com.aurum.tv.data.CatalogueDb
 import com.aurum.tv.data.Prefs
 import com.aurum.tv.data.Repository
 import com.aurum.tv.data.SecureStore
@@ -27,7 +28,6 @@ object ServiceLocator {
         prefs = Prefs(app)
 
         val secure = SecureStore(app)
-        val cacheDir = File(app.cacheDir, "catalogue").apply { mkdirs() }
         val epgDir = File(app.filesDir, "epg").apply { mkdirs() }
 
         val client = XtreamClient(
@@ -42,7 +42,7 @@ object ServiceLocator {
             prefs = prefs,
             secure = secure,
             epg = EpgStore(epgDir),
-            cacheDir = cacheDir
+            db = CatalogueDb(app)
         )
     }
 }

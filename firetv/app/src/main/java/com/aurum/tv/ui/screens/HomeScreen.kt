@@ -12,6 +12,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import com.aurum.tv.data.Channel
 import com.aurum.tv.data.Movie
 import com.aurum.tv.data.Series
 import com.aurum.tv.ui.AppState
@@ -27,20 +28,27 @@ fun HomeScreen(state: AppState, revision: Int) {
     val prefs = state.prefs
 
     val continueWatching = remember(revision) { prefs.continueWatching() }
-    val favouriteChannels = remember(revision) {
-        prefs.favouriteIds("live").mapNotNull { repo.channel(it) }
-    }
-    val recentChannels = remember(revision) {
-        prefs.recentChannels.mapNotNull { repo.channel(it) }.filter { it !in favouriteChannels }
-    }
-    val newMovies = remember(revision) { repo.movies.sortedByDescending { it.addedAt }.take(24) }
-    val newSeries = remember(revision) { repo.series.sortedByDescending { it.modifiedAt }.take(24) }
-    val topRated = remember(revision) {
-        repo.movies.filter { it.rating >= 7.5 }.sortedByDescending { it.rating }.take(24)
+
+    // Each rail is one small indexed query, not a scan of the whole line.
+    var favouriteChannels by remember(revision) { mutableStateOf<List<Channel>>(emptyList()) }
+    var recentChannels by remember(revision) { mutableStateOf<List<Channel>>(emptyList()) }
+    var newMovies by remember(revision) { mutableStateOf<List<Movie>>(emptyList()) }
+    var newSeries by remember(revision) { mutableStateOf<List<Series>>(emptyList()) }
+    var topRated by remember(revision) { mutableStateOf<List<Movie>>(emptyList()) }
+
+    LaunchedEffect(revision) {
+        favouriteChannels = repo.channelsByIds(prefs.favouriteIds("live").take(14))
+        val favIds = favouriteChannels.map { it.streamId }.toSet()
+        recentChannels = repo.channelsByIds(prefs.recentChannels.take(16))
+            .filter { it.streamId !in favIds }
+            .take(12)
+        newMovies = repo.movies(sort = "added", limit = 24)
+        newSeries = repo.seriesPage(sort = "added", limit = 24)
+        topRated = repo.movies(sort = "rating", limit = 24)
     }
 
-    if (repo.channels.isEmpty() && repo.movies.isEmpty() && repo.series.isEmpty()) {
-        LoadingState("Loading your line…")
+    if (repo.stats.isEmpty) {
+        LoadingState(if (state.ui.value.syncing) state.ui.value.syncText else "Loading your line…")
         return
     }
 
@@ -63,9 +71,9 @@ fun HomeScreen(state: AppState, revision: Int) {
                 )
                 Text(
                     buildString {
-                        append("${formatCount(repo.channels.size)} channels")
-                        if (repo.movies.isNotEmpty()) append("  ·  ${formatCount(repo.movies.size)} films")
-                        if (repo.series.isNotEmpty()) append("  ·  ${formatCount(repo.series.size)} box sets")
+                        append("${formatCount(repo.stats.channels)} channels")
+                        if (repo.stats.movies > 0) append("  ·  ${formatCount(repo.stats.movies)} films")
+                        if (repo.stats.series > 0) append("  ·  ${formatCount(repo.stats.series)} box sets")
                     },
                     color = Aurum.Text3,
                     style = MaterialTheme.typography.bodyLarge,
@@ -101,7 +109,7 @@ fun HomeScreen(state: AppState, revision: Int) {
                     SectionHeader("Favourite channels")
                     LazyRow(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                         items(favouriteChannels, key = { it.streamId }) { channel ->
-                            ChannelTile(state, channel, favouriteChannels)
+                            ChannelTile(state, channel, favouriteChannels.map { it.streamId })
                         }
                     }
                 }
@@ -114,7 +122,7 @@ fun HomeScreen(state: AppState, revision: Int) {
                     SectionHeader("Recently watched")
                     LazyRow(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                         items(recentChannels, key = { it.streamId }) { channel ->
-                            ChannelTile(state, channel, recentChannels)
+                            ChannelTile(state, channel, recentChannels.map { it.streamId })
                         }
                     }
                 }
@@ -187,8 +195,8 @@ fun SeriesPoster(state: AppState, series: Series) {
 @Composable
 private fun ChannelTile(
     state: AppState,
-    channel: com.aurum.tv.data.Channel,
-    playlist: List<com.aurum.tv.data.Channel>
+    channel: Channel,
+    playlistIds: List<String>
 ) {
     val nowNext = remember(channel.streamId) { state.repo.epg.nowNext(channel.streamId) }
     Box(Modifier.width(320.dp)) {
@@ -203,7 +211,7 @@ private fun ChannelTile(
             } ?: 0f,
             nowUntil = nowNext.now?.let { timeOfDay(it.end) },
             favourite = state.prefs.isFavourite("live", channel.streamId),
-            onClick = { state.playChannel(channel, playlist) }
+            onClick = { state.playChannel(channel, playlistIds) }
         )
     }
 }

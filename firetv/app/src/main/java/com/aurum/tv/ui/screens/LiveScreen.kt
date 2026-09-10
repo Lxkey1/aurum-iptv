@@ -4,10 +4,10 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
@@ -20,26 +20,32 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.aurum.tv.data.Channel
+import com.aurum.tv.data.NowNext
 import com.aurum.tv.data.Repository
 import com.aurum.tv.ui.AppState
 import com.aurum.tv.ui.AurumIcons
 import com.aurum.tv.ui.components.*
 import com.aurum.tv.ui.theme.Aurum
+import com.aurum.tv.util.formatCount
 import com.aurum.tv.util.tidyChannelName
 import com.aurum.tv.util.timeOfDay
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /**
- * Live TV: categories down the left, channels on the right with now/next.
- * D-pad right moves from the category list into the channel list.
+ * Live TV — categories on the left, a paged channel list on the right.
+ * Nothing is held in memory; pages arrive from the catalogue as you scroll.
  */
 @Composable
 fun LiveScreen(state: AppState, revision: Int) {
     val repo = state.repo
+    val scope = rememberCoroutineScope()
+
     var category by rememberSaveable { mutableStateOf(Repository.ALL) }
+    var groupId by rememberSaveable { mutableStateOf<Long?>(null) }
     var tick by remember { mutableIntStateOf(0) }
 
-    // Refresh now/next every minute so the progress bars stay honest.
+    // Keep now/next honest without re-querying the catalogue.
     LaunchedEffect(Unit) {
         while (true) {
             delay(60_000)
@@ -47,49 +53,83 @@ fun LiveScreen(state: AppState, revision: Int) {
         }
     }
 
-    if (repo.channels.isEmpty()) {
+    if (repo.stats.channels == 0) {
         LoadingState("Loading channels…")
         return
     }
 
-    val counts = remember(revision) { repo.channels.groupingBy { it.categoryId }.eachCount() }
+    val favourites = remember(revision) { state.prefs.favouriteIds("live") }
+    val recents = remember(revision) { state.prefs.recentChannels }
+
+    val isPinned = groupId == null && (category == Repository.FAVOURITES || category == Repository.RECENT)
+    val pinnedIds = when {
+        !isPinned -> emptyList()
+        category == Repository.FAVOURITES -> favourites
+        else -> recents
+    }
+
+    val paged = rememberPagedList<Channel>(
+        category, groupId, revision, isPinned, pinnedIds.size,
+        pageSize = 60,
+        count = {
+            if (isPinned) pinnedIds.size
+            else repo.channelCount(
+                category = category.takeIf { it != Repository.ALL },
+                groupId = groupId
+            )
+        },
+        fetch = { offset, limit ->
+            if (isPinned) repo.channelsByIds(pinnedIds.drop(offset).take(limit))
+            else repo.channels(
+                category = category.takeIf { it != Repository.ALL },
+                limit = limit,
+                offset = offset,
+                groupId = groupId
+            )
+        }
+    )
+
+    val listState = rememberLazyListState()
+    listState.PageWhenNearEnd(paged)
 
     val categories = remember(revision) {
         buildList {
-            add(Triple(Repository.ALL, "All channels", repo.channels.size))
-            add(Triple(Repository.FAVOURITES, "Favourites", state.prefs.favouriteIds("live").size))
-            add(Triple(Repository.RECENT, "Recently watched", state.prefs.recentChannels.size))
-            repo.liveCategories.forEach { cat ->
-                add(Triple(cat.id, cat.name, counts[cat.id] ?: 0))
-            }
+            add(Triple(Repository.ALL, "All channels", repo.stats.channels))
+            add(Triple(Repository.FAVOURITES, "Favourites", favourites.size))
+            add(Triple(Repository.RECENT, "Recently watched", recents.size))
         }
     }
-
-    val channels = remember(category, revision) { repo.channelsIn(category) }
-    val listState = rememberLazyListState()
-
-    LaunchedEffect(category) { listState.scrollToItem(0) }
 
     Row(Modifier.fillMaxSize()) {
 
         // ------------------------------------------------------- categories
         LazyColumn(
             contentPadding = PaddingValues(
-                start = Aurum.OverscanH,
-                end = 14.dp,
-                top = 10.dp,
-                bottom = Aurum.OverscanV
+                start = Aurum.OverscanH, end = 14.dp, top = 10.dp, bottom = Aurum.OverscanV
             ),
             verticalArrangement = Arrangement.spacedBy(3.dp),
-            modifier = Modifier.width(310.dp).fillMaxHeight()
+            modifier = Modifier.width(320.dp).fillMaxHeight()
         ) {
             items(categories, key = { it.first }) { (id, name, count) ->
-                CategoryRow(
-                    label = name,
-                    count = count,
-                    selected = category == id,
-                    onClick = { category = id }
-                )
+                CategoryRow(name, count, groupId == null && category == id) {
+                    category = id; groupId = null
+                }
+            }
+
+            if (repo.groups.isNotEmpty()) {
+                item { SidebarHeading("My groups") }
+                items(repo.groups, key = { "g${it.id}" }) { g ->
+                    CategoryRow(g.name, g.count, groupId == g.id) {
+                        groupId = g.id; category = Repository.ALL
+                    }
+                }
+            }
+
+            item { SidebarHeading("Provider categories") }
+            items(repo.liveCategories, key = { it.id }) { cat ->
+                CategoryRow(cat.name, cat.count, groupId == null && category == cat.id) {
+                    category = cat.id; groupId = null
+                }
             }
         }
 
@@ -97,18 +137,22 @@ fun LiveScreen(state: AppState, revision: Int) {
         Column(Modifier.weight(1f).fillMaxHeight()) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(end = Aurum.OverscanH, top = 10.dp, bottom = 12.dp)
+                modifier = Modifier.fillMaxWidth().padding(end = Aurum.OverscanH, top = 10.dp, bottom = 12.dp)
             ) {
                 Column(Modifier.weight(1f)) {
                     Text(
-                        categories.firstOrNull { it.first == category }?.second ?: "Channels",
+                        when {
+                            groupId != null -> repo.groups.firstOrNull { it.id == groupId }?.name ?: "Group"
+                            category == Repository.ALL -> "All channels"
+                            category == Repository.FAVOURITES -> "Favourites"
+                            category == Repository.RECENT -> "Recently watched"
+                            else -> repo.liveCategories.firstOrNull { it.id == category }?.name ?: "Channels"
+                        },
                         color = Aurum.Text,
                         style = MaterialTheme.typography.headlineMedium
                     )
                     Text(
-                        "${channels.size} channel${if (channels.size == 1) "" else "s"}",
+                        "${formatCount(paged.total)} channel${if (paged.total == 1) "" else "s"}",
                         color = Aurum.Text3,
                         style = MaterialTheme.typography.bodyMedium
                     )
@@ -119,12 +163,11 @@ fun LiveScreen(state: AppState, revision: Int) {
                 )
             }
 
-            if (channels.isEmpty()) {
+            if (paged.items.isEmpty() && !paged.loading) {
                 EmptyState(
-                    AurumIcons.Tv,
-                    "Nothing here",
+                    AurumIcons.Tv, "Nothing here",
                     if (category == Repository.FAVOURITES)
-                        "Press and hold SELECT on any channel to add it to your favourites."
+                        "Open a channel and press the favourite button to keep it here."
                     else "This category is empty."
                 )
             } else {
@@ -134,8 +177,22 @@ fun LiveScreen(state: AppState, revision: Int) {
                     verticalArrangement = Arrangement.spacedBy(2.dp),
                     modifier = Modifier.fillMaxSize()
                 ) {
-                    items(channels, key = { it.streamId }) { channel ->
-                        LiveChannelItem(state, channel, channels, tick)
+                    items(paged.items, key = { it.streamId }) { channel ->
+                        LiveChannelItem(state, channel, tick) {
+                            scope.launch {
+                                val ids =
+                                    if (isPinned) pinnedIds
+                                    else repo.channelIds(category.takeIf { it != Repository.ALL }, groupId)
+                                state.playChannel(channel, ids)
+                            }
+                        }
+                    }
+                    if (!paged.exhausted) {
+                        item {
+                            Box(Modifier.fillMaxWidth().padding(20.dp), contentAlignment = Alignment.Center) {
+                                Text("Loading more…", color = Aurum.Text4, fontSize = 12.sp)
+                            }
+                        }
                     }
                 }
             }
@@ -144,13 +201,19 @@ fun LiveScreen(state: AppState, revision: Int) {
 }
 
 @Composable
-private fun LiveChannelItem(
-    state: AppState,
-    channel: Channel,
-    playlist: List<Channel>,
-    tick: Int
-) {
-    val nowNext = remember(channel.streamId, tick) { state.repo.epg.nowNext(channel.streamId) }
+private fun SidebarHeading(text: String) {
+    Text(
+        text.uppercase(),
+        color = Aurum.Text4,
+        fontSize = 10.sp,
+        letterSpacing = 1.4.sp,
+        modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 6.dp)
+    )
+}
+
+@Composable
+private fun LiveChannelItem(state: AppState, channel: Channel, tick: Int, onPlay: () -> Unit) {
+    val nowNext: NowNext = remember(channel.streamId, tick) { state.repo.epg.nowNext(channel.streamId) }
     val now = nowNext.now
 
     ChannelRow(
@@ -164,7 +227,7 @@ private fun LiveChannelItem(
         } ?: 0f,
         nowUntil = now?.let { timeOfDay(it.end) },
         favourite = state.prefs.isFavourite("live", channel.streamId),
-        onClick = { state.playChannel(channel, playlist) }
+        onClick = onPlay
     )
 }
 
@@ -201,7 +264,7 @@ fun CategoryRow(label: String, count: Int, selected: Boolean, onClick: () -> Uni
             modifier = Modifier.weight(1f)
         )
         Text(
-            count.toString(),
+            formatCount(count),
             color = if (focused) Aurum.AccentInk.copy(alpha = 0.6f) else Aurum.Text4,
             fontSize = 12.sp
         )

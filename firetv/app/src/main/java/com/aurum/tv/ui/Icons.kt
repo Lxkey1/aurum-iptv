@@ -231,6 +231,14 @@ object AurumIcons {
         moveTo(9f, 6f); lineTo(9f, 3f); lineTo(15f, 3f); lineTo(15f, 6f)
     }
 
+    val History = stroke("history") {
+        moveTo(3f, 3f); lineTo(3f, 8f); lineTo(8f, 8f)
+        moveTo(3.05f, 13f)
+        arcToRelative(9f, 9f, 0f, true, false, 2.6f, -6.4f)
+        lineTo(3f, 8f)
+        moveTo(12f, 7f); lineTo(12f, 12f); lineTo(15.5f, 14f)
+    }
+
     val Check = stroke("check") {
         moveTo(4f, 12f); lineTo(9f, 17f); lineTo(20f, 6f)
     }

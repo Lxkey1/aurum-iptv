@@ -51,6 +51,7 @@ import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
+import com.aurum.tv.data.Channel
 import com.aurum.tv.data.XtreamClient
 import com.aurum.tv.ui.AppState
 import com.aurum.tv.ui.AurumIcons
@@ -365,10 +366,11 @@ fun PlayerScreen(state: AppState, request: PlaybackRequest) {
 
         if (showZapList && request.isLive) {
             ZapList(
+                state = state,
                 request = request,
-                onPick = { index ->
+                onPick = { channel ->
                     showZapList = false
-                    state.playChannel(request.playlist[index], request.playlist)
+                    state.playChannel(channel, request.playlist)
                     zapOverlay = true
                 },
                 onDismiss = { showZapList = false }
@@ -623,9 +625,8 @@ private fun ZapBanner(request: PlaybackRequest) {
             .border(BorderStroke(1.dp, Color.White.copy(alpha = 0.12f)), RoundedCornerShape(16.dp))
             .padding(horizontal = 22.dp, vertical = 16.dp)
     ) {
-        val channel = request.playlist.getOrNull(request.playlistIndex)
         Text(
-            (channel?.number ?: 0).toString(),
+            (request.playlistIndex + 1).coerceAtLeast(1).toString(),
             color = Aurum.Accent,
             fontSize = 30.sp,
             fontWeight = FontWeight.Bold
@@ -639,13 +640,30 @@ private fun ZapBanner(request: PlaybackRequest) {
     }
 }
 
+/**
+ * The zap list holds ids, so only a window around the current channel is
+ * resolved to rows — a category can run to tens of thousands of channels.
+ */
 @Composable
-private fun ZapList(request: PlaybackRequest, onPick: (Int) -> Unit, onDismiss: () -> Unit) {
+private fun ZapList(
+    state: AppState,
+    request: PlaybackRequest,
+    onPick: (Channel) -> Unit,
+    onDismiss: () -> Unit
+) {
     val listState = rememberLazyListState()
     val focusRequester = remember { FocusRequester() }
 
-    LaunchedEffect(Unit) {
-        if (request.playlistIndex >= 0) listState.scrollToItem(request.playlistIndex.coerceAtLeast(0))
+    val centre = request.playlistIndex.coerceAtLeast(0)
+    val from = (centre - 40).coerceAtLeast(0)
+    val window = request.playlist.drop(from).take(100)
+
+    var rows by remember(request.streamId) { mutableStateOf<List<Channel>>(emptyList()) }
+    LaunchedEffect(request.streamId) {
+        rows = state.repo.channelsByIds(window)
+        if (request.playlistIndex >= 0) {
+            listState.scrollToItem((centre - from).coerceIn(0, (rows.size - 1).coerceAtLeast(0)))
+        }
         runCatching { focusRequester.requestFocus() }
     }
 
@@ -660,7 +678,7 @@ private fun ZapList(request: PlaybackRequest, onPick: (Int) -> Unit, onDismiss: 
                 .background(Color(0xF20A0C11))
                 .border(BorderStroke(1.dp, Aurum.BorderStrong))
         ) {
-            itemsIndexed(request.playlist) { index, channel ->
+            itemsIndexed(rows) { index, channel ->
                 var focused by remember { mutableStateOf(false) }
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -672,14 +690,14 @@ private fun ZapList(request: PlaybackRequest, onPick: (Int) -> Unit, onDismiss: 
                         .background(
                             when {
                                 focused -> Aurum.Accent
-                                index == request.playlistIndex -> Aurum.AccentSoft
+                                channel.streamId == request.streamId -> Aurum.AccentSoft
                                 else -> Color.Transparent
                             }
                         )
                         .then(if (index == 0) Modifier.focusRequester(focusRequester) else Modifier)
                         .onFocusChangedCompat { focused = it }
                         .focusable()
-                        .clickable { onPick(index) }
+                        .clickable { onPick(channel) }
                         .padding(horizontal = 14.dp, vertical = 12.dp)
                 ) {
                     Text(

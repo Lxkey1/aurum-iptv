@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -13,7 +14,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import com.aurum.tv.data.Category
+import com.aurum.tv.data.CategoryCount
 import com.aurum.tv.data.Movie
 import com.aurum.tv.data.Repository
 import com.aurum.tv.data.Series
@@ -23,11 +24,11 @@ import com.aurum.tv.ui.components.*
 import com.aurum.tv.ui.theme.Aurum
 import com.aurum.tv.util.formatCount
 
-private enum class Sort(val label: String) {
-    ADDED("Recently added"),
-    NAME("A – Z"),
-    RATING("Top rated"),
-    YEAR("Newest first")
+private enum class Sort(val label: String, val key: String) {
+    ADDED("Recently added", "added"),
+    NAME("A – Z", "name"),
+    RATING("Top rated", "rating"),
+    YEAR("Newest first", "year")
 }
 
 @Composable
@@ -36,37 +37,46 @@ fun MoviesScreen(state: AppState, revision: Int) {
     var category by rememberSaveable { mutableStateOf(Repository.ALL) }
     var sort by rememberSaveable { mutableStateOf(Sort.ADDED) }
 
-    if (repo.movies.isEmpty()) {
+    if (repo.stats.movies == 0) {
         LoadingState("Loading films…")
         return
     }
 
-    val visible = remember(category, sort, revision) {
-        val list = repo.moviesIn(category)
-        when (sort) {
-            Sort.NAME -> list.sortedBy { it.name.lowercase() }
-            Sort.RATING -> list.sortedByDescending { it.rating }
-            Sort.YEAR -> list.sortedByDescending { it.year?.toIntOrNull() ?: 0 }
-            Sort.ADDED -> list.sortedByDescending { it.addedAt }
+    val favourites = remember(revision) { state.prefs.favouriteIds("movie") }
+    val isFav = category == Repository.FAVOURITES
+
+    val paged = rememberPagedList<Movie>(
+        category, sort, revision,
+        pageSize = 60,
+        count = {
+            if (isFav) favourites.size
+            else repo.titleCount("movie", category.takeIf { it != Repository.ALL })
+        },
+        fetch = { offset, limit ->
+            if (isFav) repo.moviesByIds(favourites.drop(offset).take(limit))
+            else repo.movies(
+                category = category.takeIf { it != Repository.ALL },
+                sort = sort.key, limit = limit, offset = offset
+            )
         }
-    }
+    )
 
     CatalogueScaffold(
         title = "Films",
-        countLabel = "${formatCount(visible.size)} films",
-        total = repo.movies.size,
+        countLabel = "${formatCount(paged.total)} films",
+        total = repo.stats.movies,
+        favouriteCount = favourites.size,
         categories = repo.movieCategories,
         selectedCategory = category,
         onCategory = { category = it },
         sort = sort,
         onSort = { sort = it },
-        isEmpty = visible.isEmpty(),
+        isEmpty = paged.items.isEmpty() && !paged.loading,
         emptyIcon = AurumIcons.Film,
-        emptyIsFavourites = category == Repository.FAVOURITES
+        emptyIsFavourites = isFav,
+        paged = paged
     ) {
-        items(visible, key = { it.streamId }) { movie: Movie ->
-            MoviePoster(state, movie)
-        }
+        items(paged.items, key = { it.streamId }) { movie -> MoviePoster(state, movie) }
     }
 }
 
@@ -76,47 +86,56 @@ fun SeriesScreen(state: AppState, revision: Int) {
     var category by rememberSaveable { mutableStateOf(Repository.ALL) }
     var sort by rememberSaveable { mutableStateOf(Sort.ADDED) }
 
-    if (repo.series.isEmpty()) {
+    if (repo.stats.series == 0) {
         LoadingState("Loading box sets…")
         return
     }
 
-    val visible = remember(category, sort, revision) {
-        val list = repo.seriesIn(category)
-        when (sort) {
-            Sort.NAME -> list.sortedBy { it.name.lowercase() }
-            Sort.RATING -> list.sortedByDescending { it.rating }
-            Sort.YEAR -> list.sortedByDescending { it.year?.toIntOrNull() ?: 0 }
-            Sort.ADDED -> list.sortedByDescending { it.modifiedAt }
+    val favourites = remember(revision) { state.prefs.favouriteIds("series") }
+    val isFav = category == Repository.FAVOURITES
+
+    val paged = rememberPagedList<Series>(
+        category, sort, revision,
+        pageSize = 60,
+        count = {
+            if (isFav) favourites.size
+            else repo.titleCount("series", category.takeIf { it != Repository.ALL })
+        },
+        fetch = { offset, limit ->
+            if (isFav) repo.seriesByIds(favourites.drop(offset).take(limit))
+            else repo.seriesPage(
+                category = category.takeIf { it != Repository.ALL },
+                sort = sort.key, limit = limit, offset = offset
+            )
         }
-    }
+    )
 
     CatalogueScaffold(
         title = "Box sets",
-        countLabel = "${formatCount(visible.size)} titles",
-        total = repo.series.size,
+        countLabel = "${formatCount(paged.total)} titles",
+        total = repo.stats.series,
+        favouriteCount = favourites.size,
         categories = repo.seriesCategories,
         selectedCategory = category,
         onCategory = { category = it },
         sort = sort,
         onSort = { sort = it },
-        isEmpty = visible.isEmpty(),
+        isEmpty = paged.items.isEmpty() && !paged.loading,
         emptyIcon = AurumIcons.SeriesIcon,
-        emptyIsFavourites = category == Repository.FAVOURITES
+        emptyIsFavourites = isFav,
+        paged = paged
     ) {
-        items(visible, key = { it.seriesId }) { series: Series ->
-            SeriesPoster(state, series)
-        }
+        items(paged.items, key = { it.seriesId }) { series -> SeriesPoster(state, series) }
     }
 }
 
-/** Shared chrome: title, sort chips, category chips and the poster grid. */
 @Composable
 private fun CatalogueScaffold(
     title: String,
     countLabel: String,
     total: Int,
-    categories: List<Category>,
+    favouriteCount: Int,
+    categories: List<CategoryCount>,
     selectedCategory: String,
     onCategory: (String) -> Unit,
     sort: Sort,
@@ -124,14 +143,16 @@ private fun CatalogueScaffold(
     isEmpty: Boolean,
     emptyIcon: androidx.compose.ui.graphics.vector.ImageVector,
     emptyIsFavourites: Boolean,
+    paged: PagedList<*>,
     gridContent: androidx.compose.foundation.lazy.grid.LazyGridScope.() -> Unit
 ) {
+    val gridState = rememberLazyGridState()
+    gridState.PageWhenNearEnd(paged)
+
     Column(Modifier.fillMaxSize()) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.padding(
-                start = Aurum.OverscanH, end = Aurum.OverscanH, top = 10.dp, bottom = 14.dp
-            )
+            modifier = Modifier.padding(start = Aurum.OverscanH, end = Aurum.OverscanH, top = 10.dp, bottom = 14.dp)
         ) {
             Column(Modifier.weight(1f)) {
                 Text(title, color = Aurum.Text, style = MaterialTheme.typography.headlineLarge)
@@ -153,30 +174,28 @@ private fun CatalogueScaffold(
             TvChip("All", selectedCategory == Repository.ALL, trailing = formatCount(total)) {
                 onCategory(Repository.ALL)
             }
-            TvChip("Favourites", selectedCategory == Repository.FAVOURITES) {
+            TvChip("Favourites", selectedCategory == Repository.FAVOURITES, trailing = formatCount(favouriteCount)) {
                 onCategory(Repository.FAVOURITES)
             }
             categories.forEach { cat ->
-                TvChip(cat.name, selectedCategory == cat.id) { onCategory(cat.id) }
+                TvChip(cat.name, selectedCategory == cat.id, trailing = formatCount(cat.count)) { onCategory(cat.id) }
             }
         }
 
         if (isEmpty) {
             EmptyState(
-                emptyIcon,
-                "Nothing here",
+                emptyIcon, "Nothing here",
                 if (emptyIsFavourites) "Open any title and choose Favourite to keep it here."
                 else "This category is empty."
             )
         } else {
             LazyVerticalGrid(
+                state = gridState,
                 columns = GridCells.Adaptive(minSize = 182.dp),
                 horizontalArrangement = Arrangement.spacedBy(18.dp),
                 verticalArrangement = Arrangement.spacedBy(22.dp),
                 contentPadding = PaddingValues(
-                    start = Aurum.OverscanH,
-                    end = Aurum.OverscanH,
-                    bottom = Aurum.OverscanV + 30.dp
+                    start = Aurum.OverscanH, end = Aurum.OverscanH, bottom = Aurum.OverscanV + 30.dp
                 ),
                 modifier = Modifier.fillMaxSize(),
                 content = gridContent

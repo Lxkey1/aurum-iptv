@@ -85,9 +85,18 @@ fun SettingsScreen(state: AppState, revision: Int) {
                             }
                         }
                     )
+                    Spacer(Modifier.height(10.dp))
+                    Text(
+                        if (ui.syncing) ui.syncText
+                        else "${formatCount(ui.stats.channels)} channels · ${formatCount(ui.stats.movies)} films · " +
+                            "${formatCount(ui.stats.series)} box sets" +
+                            (if (ui.stats.hidden > 0) " · ${ui.stats.hidden} hidden" else ""),
+                        color = Aurum.Text3,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
                     Spacer(Modifier.height(18.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        TvButton("Refresh catalogue", icon = AurumIcons.Refresh) {
+                        TvButton("Refresh catalogue", icon = AurumIcons.Refresh, enabled = !ui.syncing) {
                             state.loadCatalogue(force = true)
                         }
                         TvButton("Sign out", icon = AurumIcons.Logout, danger = true) {

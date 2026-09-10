@@ -148,9 +148,9 @@ private fun Sidebar(state: AppState, ui: UiState) {
 
         NAV.forEach { item ->
             val badge = when (item.screen) {
-                Screen.Live -> state.repo.channels.size
-                Screen.Movies -> state.repo.movies.size
-                Screen.SeriesList -> state.repo.series.size
+                Screen.Live -> ui.stats.channels
+                Screen.Movies -> ui.stats.movies
+                Screen.SeriesList -> ui.stats.series
                 else -> 0
             }
             NavRow(
@@ -197,6 +197,16 @@ private fun Sidebar(state: AppState, ui: UiState) {
                     Text(account.status, color = Aurum.Text4, fontSize = 11.sp)
                 }
             }
+        }
+
+        if (ui.syncing && expanded) {
+            Text(
+                ui.syncText,
+                color = Aurum.Accent,
+                fontSize = 10.sp,
+                maxLines = 2,
+                modifier = Modifier.padding(top = 12.dp, start = 8.dp)
+            )
         }
 
         if (ui.epgLoading && expanded) {

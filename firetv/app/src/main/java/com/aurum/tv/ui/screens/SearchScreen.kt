@@ -11,6 +11,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import com.aurum.tv.data.CatalogueDb
 import com.aurum.tv.ui.AppState
 import com.aurum.tv.ui.AurumIcons
 import com.aurum.tv.ui.components.*
@@ -25,21 +26,23 @@ fun SearchScreen(state: AppState, revision: Int) {
     val repo = state.repo
     val needle = query.trim().lowercase()
 
-    val channels = remember(needle, revision) {
-        if (needle.length < 2) emptyList()
-        else repo.channels.filter { it.name.lowercase().contains(needle) }.take(40)
+    // One FTS query across channels, films and box sets rather than three scans.
+    var results by remember { mutableStateOf(CatalogueDb.SearchResult(emptyList(), emptyList(), emptyList())) }
+    var programmes by remember { mutableStateOf<List<Pair<String, com.aurum.tv.data.Programme>>>(emptyList()) }
+
+    LaunchedEffect(needle, revision) {
+        if (needle.length < 2) {
+            results = CatalogueDb.SearchResult(emptyList(), emptyList(), emptyList())
+            programmes = emptyList()
+        } else {
+            results = repo.search(query.trim(), 40)
+            programmes = repo.epg.search(query.trim(), 40)
+        }
     }
-    val movies = remember(needle, revision) {
-        if (needle.length < 2) emptyList()
-        else repo.movies.filter { it.name.lowercase().contains(needle) }.take(40)
-    }
-    val series = remember(needle, revision) {
-        if (needle.length < 2) emptyList()
-        else repo.series.filter { it.name.lowercase().contains(needle) }.take(40)
-    }
-    val programmes = remember(needle, revision) {
-        if (needle.length < 2) emptyList() else repo.epg.search(query.trim(), 40)
-    }
+
+    val channels = results.channels
+    val movies = results.movies
+    val series = results.series
 
     LazyColumn(
         contentPadding = PaddingValues(
@@ -106,7 +109,7 @@ fun SearchScreen(state: AppState, revision: Int) {
                     nowProgress = 0f,
                     nowUntil = nowNext.now?.let { timeOfDay(it.end) },
                     favourite = state.prefs.isFavourite("live", channel.streamId),
-                    onClick = { state.playChannel(channel, channels) }
+                    onClick = { state.playChannel(channel, channels.map { c -> c.streamId }) }
                 )
             }
         }
@@ -136,7 +139,7 @@ fun SearchScreen(state: AppState, revision: Int) {
         if (programmes.isNotEmpty()) {
             item { SectionHeader("Coming up in the guide · ${programmes.size}") }
             items(programmes, key = { "prog-${it.first}-${it.second.start}" }) { (streamId, programme) ->
-                val channel = repo.channel(streamId)
+                val channel = remember(streamId) { repo.db.channel(streamId) }
                 ChannelRow(
                     number = channel?.number ?: 0,
                     name = programme.title,
@@ -144,7 +147,7 @@ fun SearchScreen(state: AppState, revision: Int) {
                     nowTitle = "${dayLabel(programme.start)} ${timeOfDay(programme.start)} · ${channel?.let { tidyChannelName(it.name) }.orEmpty()}",
                     nowProgress = 0f,
                     nowUntil = null,
-                    onClick = { channel?.let { state.playChannel(it, repo.channels) } }
+                    onClick = { channel?.let { c -> state.playChannel(c, listOf(c.streamId)) } }
                 )
             }
         }

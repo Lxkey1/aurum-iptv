@@ -68,7 +68,16 @@ fun GuideScreen(state: AppState, revision: Int) {
         }
     }
 
-    val channels = remember(category, revision) { repo.channelsIn(category) }
+    // A capped, ordered page — drawing 50,000 lanes helps nobody, and the
+    // catalogue is queried rather than held.
+    var channels by remember(category, revision) { mutableStateOf<List<Channel>>(emptyList()) }
+    LaunchedEffect(category, revision) {
+        channels = when (category) {
+            Repository.FAVOURITES -> repo.channelsByIds(state.prefs.favouriteIds("live"))
+            Repository.ALL -> repo.channels(limit = 300)
+            else -> repo.channels(category = category, limit = 300)
+        }
+    }
     val windowStart = remember(now) { now - 30 * 60_000 }
     val windowEnd = remember(now) { now + 24 * 3_600_000 }
 
@@ -85,7 +94,7 @@ fun GuideScreen(state: AppState, revision: Int) {
             Column(Modifier.weight(1f)) {
                 Text("TV Guide", color = Aurum.Text, style = MaterialTheme.typography.headlineLarge)
                 Text(
-                    "${dayLabel(now)}  ·  ${ui.epgMatched} of ${repo.channels.size} channels matched",
+                    "${dayLabel(now)}  ·  ${ui.epgMatched} of ${repo.stats.channels} channels matched",
                     color = Aurum.Text3,
                     style = MaterialTheme.typography.bodyMedium
                 )
@@ -100,12 +109,12 @@ fun GuideScreen(state: AppState, revision: Int) {
                 .horizontalScroll(rememberScrollState())
                 .padding(start = Aurum.OverscanH, end = Aurum.OverscanH, bottom = 14.dp)
         ) {
-            TvChip("All", category == Repository.ALL, trailing = repo.channels.size.toString()) {
+            TvChip("All", category == Repository.ALL, trailing = repo.stats.channels.toString()) {
                 category = Repository.ALL
             }
             TvChip("Favourites", category == Repository.FAVOURITES) { category = Repository.FAVOURITES }
             repo.liveCategories.forEach { cat ->
-                TvChip(cat.name, category == cat.id) { category = cat.id }
+                TvChip(cat.name, category == cat.id, trailing = cat.count.toString()) { category = cat.id }
             }
         }
 
@@ -127,7 +136,7 @@ fun GuideScreen(state: AppState, revision: Int) {
                         },
                         now = now,
                         onProgramme = { programme -> selected = channel to programme },
-                        onPlay = { state.playChannel(channel, channels) }
+                        onPlay = { state.playChannel(channel, channels.map { c -> c.streamId }) }
                     )
                 }
             }
@@ -141,7 +150,11 @@ fun GuideScreen(state: AppState, revision: Int) {
             now = now,
             onWatch = {
                 selected = null
-                state.playChannel(channel, channels)
+                state.playChannel(channel, channels.map { c -> c.streamId })
+            },
+            onCatchup = {
+                selected = null
+                state.playCatchup(channel, programme)
             },
             onDismiss = { selected = null }
         )
@@ -295,9 +308,14 @@ private fun ProgrammeSheet(
     programme: Programme,
     now: Long,
     onWatch: () -> Unit,
+    onCatchup: () -> Unit,
     onDismiss: () -> Unit
 ) {
     val onAir = programme.start <= now && programme.end > now
+    val hasEnded = programme.end <= now
+    // Catch-up only makes sense for a programme that has already aired on a
+    // channel whose provider actually keeps an archive.
+    val canCatchUp = hasEnded && channel.hasArchive
     val minutes = ((programme.end - programme.start) / 60_000).toInt()
 
     Box(
@@ -319,6 +337,7 @@ private fun ProgrammeSheet(
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 if (onAir) Badge("ON NOW", tone = Aurum.Live, live = true)
                 else Badge(dayLabel(programme.start), tone = Aurum.Text3)
+                if (channel.hasArchive) Badge("CATCH-UP", tone = Aurum.Accent)
                 Badge("$minutes min", tone = Aurum.Text3)
                 programme.category?.let { Badge(it, tone = Aurum.Accent) }
             }
@@ -334,8 +353,23 @@ private fun ProgrammeSheet(
                 style = MaterialTheme.typography.bodyLarge
             )
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.padding(top = 8.dp)) {
-                TvButton(if (onAir) "Watch now" else "Go to channel", icon = AurumIcons.Play, primary = true, onClick = onWatch)
+                if (canCatchUp) {
+                    TvButton("Watch from start", icon = AurumIcons.History, primary = true, onClick = onCatchup)
+                }
+                TvButton(
+                    if (onAir) "Watch now" else "Go to channel",
+                    icon = AurumIcons.Play,
+                    primary = !canCatchUp,
+                    onClick = onWatch
+                )
                 TvButton("Close", onClick = onDismiss)
+            }
+            if (hasEnded && !channel.hasArchive) {
+                Text(
+                    "This channel does not offer catch-up, so this programme can no longer be watched.",
+                    color = Aurum.Text4,
+                    style = MaterialTheme.typography.bodyMedium
+                )
             }
         }
     }

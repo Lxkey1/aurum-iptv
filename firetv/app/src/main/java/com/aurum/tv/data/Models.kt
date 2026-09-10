@@ -101,7 +101,9 @@ data class Channel(
     val categoryId: String,
     val epgChannelId: String?,
     val hasArchive: Boolean,
-    val addedAt: Long
+    val addedAt: Long,
+    /** Set from channel_pref when the row comes out of the catalogue. */
+    val hidden: Boolean = false
 ) {
     companion object {
         fun from(el: JsonElement, fallbackNumber: Int): Channel? {

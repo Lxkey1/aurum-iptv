@@ -43,8 +43,9 @@ data class PlaybackRequest(
     val extension: String = "ts",
     val season: Int = 0,
     val episode: Int = 0,
-    /** Live only: the list to zap through with up/down. */
-    val playlist: List<Channel> = emptyList(),
+    val hasArchive: Boolean = false,
+    /** Live only: ordered channel ids to zap through with up/down. */
+    val playlist: List<String> = emptyList(),
     val playlistIndex: Int = -1,
     /** VOD only: what to roll on to when this finishes. */
     val upNext: (() -> PlaybackRequest?)? = null
@@ -52,6 +53,10 @@ data class PlaybackRequest(
 
 data class UiState(
     val screen: Screen = Screen.Boot,
+    val syncing: Boolean = false,
+    val syncText: String = "",
+    val syncPercent: Int = 0,
+    val stats: CatalogueDb.Stats = CatalogueDb.Stats(0, 0, 0, 0, 0, 0),
     val account: Account? = null,
     val loading: Boolean = false,
     val loadingText: String = "",
@@ -136,18 +141,39 @@ class AppState : ViewModel() {
         loadCatalogue()
     }
 
+    /**
+     * Streams the catalogue from the provider into SQLite. Only needed on first
+     * sign-in or an explicit refresh; every screen afterwards is an indexed
+     * query, so nothing large is ever resident.
+     */
     fun loadCatalogue(force: Boolean = false) {
         viewModelScope.launch {
-            try {
-                repo.loadChannels(force)
-                _ui.update { it.copy(catalogueReady = true, epgMatched = repo.epg.matchedCount, revision = it.revision + 1) }
-            } catch (e: Exception) {
-                _ui.update { it.copy(error = "Channels: ${e.message}") }
+            repo.refreshLocalState()
+            if (!force && repo.isPopulated) {
+                _ui.update {
+                    it.copy(catalogueReady = true, stats = repo.stats, revision = it.revision + 1)
+                }
+                if (prefs.settings.epgAutoLoad && !repo.epg.isReady) refreshEpg()
+                return@launch
             }
-            // Films and box sets are large; failing one must not block the other.
-            runCatching { repo.loadMovies(force) }
-            runCatching { repo.loadSeries(force) }
-            _ui.update { it.copy(revision = it.revision + 1) }
+
+            _ui.update { it.copy(syncing = true, syncPercent = 0, syncText = "Starting…") }
+            try {
+                val stats = repo.sync(force) { progress ->
+                    _ui.update { it.copy(syncText = progress.text, syncPercent = progress.percent) }
+                }
+                _ui.update {
+                    it.copy(
+                        syncing = false,
+                        catalogueReady = true,
+                        stats = stats,
+                        epgMatched = repo.epg.matchedCount,
+                        revision = it.revision + 1
+                    )
+                }
+            } catch (e: Exception) {
+                _ui.update { it.copy(syncing = false, error = "Catalogue: ${e.message}") }
+            }
 
             if (prefs.settings.epgAutoLoad && !repo.epg.isReady) refreshEpg()
         }
@@ -178,7 +204,7 @@ class AppState : ViewModel() {
             }
             result.fold(
                 onSuccess = { stats ->
-                    val matched = repo.epg.mapChannels(repo.channels)
+                    val matched = repo.epg.mapChannels(repo.db.epgMappingRows())
                     _ui.update {
                         it.copy(
                             epgLoading = false,
@@ -247,9 +273,12 @@ class AppState : ViewModel() {
 
     // ------------------------------------------------------------- playback
 
-    fun playChannel(channel: Channel, playlist: List<Channel>) {
+    /**
+     * @param playlistIds ordered ids for zapping. Ids only — a category can hold
+     *   tens of thousands of channels and the rows are fetched as they are needed.
+     */
+    fun playChannel(channel: Channel, playlistIds: List<String>) {
         prefs.pushRecentChannel(channel.streamId)
-        val index = playlist.indexOfFirst { it.streamId == channel.streamId }
         val nowNext = repo.epg.nowNext(channel.streamId)
         _playback.value = PlaybackRequest(
             type = "live",
@@ -260,8 +289,9 @@ class AppState : ViewModel() {
             streamId = channel.streamId,
             cover = channel.logo,
             extension = prefs.settings.liveFormat,
-            playlist = playlist,
-            playlistIndex = index
+            hasArchive = channel.hasArchive,
+            playlist = playlistIds,
+            playlistIndex = playlistIds.indexOf(channel.streamId)
         )
         bumpRevision()
     }
@@ -271,7 +301,27 @@ class AppState : ViewModel() {
         val current = _playback.value ?: return
         if (!current.isLive || current.playlist.size < 2) return
         val next = ((current.playlistIndex + delta) % current.playlist.size + current.playlist.size) % current.playlist.size
-        playChannel(current.playlist[next], current.playlist)
+        viewModelScope.launch {
+            val channel = repo.channel(current.playlist[next]) ?: return@launch
+            playChannel(channel, current.playlist)
+        }
+    }
+
+    /** Play a past programme on a channel that supports catch-up. */
+    fun playCatchup(channel: Channel, programme: Programme) {
+        val minutes = ((programme.end - programme.start) / 60_000L).toInt().coerceAtLeast(1)
+        _playback.value = PlaybackRequest(
+            type = "catchup",
+            title = com.aurum.tv.util.tidyChannelName(channel.name),
+            subtitle = programme.title,
+            url = repo.catchupUrl(channel.streamId, programme.start, minutes),
+            isLive = false,
+            streamId = channel.streamId,
+            cover = channel.logo,
+            extension = prefs.settings.liveFormat,
+            hasArchive = true
+        )
+        bumpRevision()
     }
 
     fun playMovie(movie: Movie, detail: TitleDetail? = null) {
@@ -338,8 +388,10 @@ class AppState : ViewModel() {
 
     fun resume(entry: Progress) {
         when (entry.type) {
-            "movie" -> {
-                val movie = repo.movies.firstOrNull { it.streamId == entry.id }
+            "movie" -> viewModelScope.launch {
+                // Prefer the catalogue row (fresher metadata); fall back to the
+                // resume entry itself if the title has since left the line.
+                val movie = repo.moviesByIds(listOf(entry.id)).firstOrNull()
                     ?: Movie(entry.id, entry.name, entry.cover, 0.0, null, "", entry.extension, 0)
                 playMovie(movie)
             }
@@ -381,8 +433,8 @@ class AppState : ViewModel() {
         prefs.updateSettings { it.copy(liveFormat = next) }
         val current = _playback.value
         if (current != null && current.isLive) {
-            val channel = repo.channel(current.streamId)
-            if (channel != null) {
+            viewModelScope.launch {
+                val channel = repo.channel(current.streamId) ?: return@launch
                 _playback.value = current.copy(url = repo.liveUrl(channel), extension = next)
             }
         }

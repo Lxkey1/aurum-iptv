@@ -5,43 +5,37 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import java.io.File
 
 /**
- * Single source of truth for catalogue data.
+ * Single source of truth.
  *
- * Channel/film/series lists are fetched once per session and kept in memory;
- * the raw JSON is also written to disk so a cold start can paint immediately
- * while a refresh happens in the background.
+ * The catalogue lives in SQLite, not in memory — a real line runs to a quarter
+ * of a million items and a Fire TV Stick cannot hold that. Screens ask for
+ * pages; nothing here caches more than the counts and the category lists.
  */
 class Repository(
     val client: XtreamClient,
     val prefs: Prefs,
     val secure: SecureStore,
     val epg: EpgStore,
-    private val cacheDir: File
+    val db: CatalogueDb
 ) {
     var account: Account? = null
         private set
 
-    var channels: List<Channel> = emptyList()
-        private set
-    var liveCategories: List<Category> = emptyList()
+    var stats: CatalogueDb.Stats = CatalogueDb.Stats(0, 0, 0, 0, 0, 0)
         private set
 
-    var movies: List<Movie> = emptyList()
+    var liveCategories: List<CategoryCount> = emptyList()
         private set
-    var movieCategories: List<Category> = emptyList()
+    var movieCategories: List<CategoryCount> = emptyList()
+        private set
+    var seriesCategories: List<CategoryCount> = emptyList()
+        private set
+    var groups: List<CatalogueDb.Group> = emptyList()
         private set
 
-    var series: List<Series> = emptyList()
-        private set
-    var seriesCategories: List<Category> = emptyList()
-        private set
-
-    private val channelsById = HashMap<String, Channel>()
-    private val loadLock = Mutex()
-
+    private val syncLock = Mutex()
     private val detailCache = LinkedHashMap<String, Any>(0, 0.75f, true)
 
     // ------------------------------------------------------------------ auth
@@ -63,7 +57,6 @@ class Repository(
         val result = client.authenticate()
         account = result
         if (remember) secure.save(host, user, pass)
-        clearDiskCache()
         return result
     }
 
@@ -81,62 +74,132 @@ class Repository(
     fun signOut() {
         secure.clear()
         account = null
-        channels = emptyList()
-        movies = emptyList()
-        series = emptyList()
-        channelsById.clear()
         detailCache.clear()
         epg.clear()
-        clearDiskCache()
+        db.replaceAll { }          // empty the catalogue
+        db.resetChannelPrefs()
+        refreshLocalState()
     }
 
     // ------------------------------------------------------------- catalogue
 
-    suspend fun loadChannels(force: Boolean = false): List<Channel> = loadLock.withLock {
-        if (channels.isNotEmpty() && !force) return channels
-        val categories = runCatching { client.liveCategories() }.getOrDefault(emptyList())
-        val list = client.liveStreams()
-        liveCategories = categories
-        channels = list
-        channelsById.clear()
-        list.forEach { channelsById[it.streamId] = it }
-        if (epg.isReady) epg.mapChannels(list)
-        list
+    /** Streams the whole catalogue from the provider into SQLite. */
+    suspend fun sync(
+        force: Boolean = false,
+        onProgress: (StreamingIngest.Progress) -> Unit = {}
+    ): CatalogueDb.Stats = syncLock.withLock {
+        if (!force && !db.stats().isEmpty) {
+            refreshLocalState()
+            return@withLock stats
+        }
+        StreamingIngest.syncAll(client, db, onProgress)
+        refreshLocalState()
+        if (epg.isReady) epg.mapChannels(db.epgMappingRows())
+        stats
     }
 
-    suspend fun loadMovies(force: Boolean = false): List<Movie> = loadLock.withLock {
-        if (movies.isNotEmpty() && !force) return movies
-        movieCategories = runCatching { client.vodCategories() }.getOrDefault(emptyList())
-        movies = client.vodStreams()
-        movies
+    fun refreshLocalState() {
+        stats = db.stats()
+        liveCategories = db.categories("live")
+        movieCategories = db.categories("movie")
+        seriesCategories = db.categories("series")
+        groups = db.groups()
     }
 
-    suspend fun loadSeries(force: Boolean = false): List<Series> = loadLock.withLock {
-        if (series.isNotEmpty() && !force) return series
-        seriesCategories = runCatching { client.seriesCategories() }.getOrDefault(emptyList())
-        series = client.seriesList()
-        series
+    val isPopulated: Boolean get() = !stats.isEmpty
+
+    // ---------------------------------------------------------------- paging
+
+    suspend fun channels(
+        category: String? = null,
+        search: String? = null,
+        limit: Int = 100,
+        offset: Int = 0,
+        includeHidden: Boolean = false,
+        groupId: Long? = null
+    ): List<Channel> = withContext(Dispatchers.IO) {
+        db.channels(category, search, limit, offset, includeHidden, groupId)
     }
 
-    fun channel(streamId: String): Channel? = channelsById[streamId]
+    suspend fun channelCount(
+        category: String? = null, search: String? = null,
+        includeHidden: Boolean = false, groupId: Long? = null
+    ): Int = withContext(Dispatchers.IO) { db.channelCount(category, search, includeHidden, groupId) }
 
-    fun channelsIn(categoryId: String?): List<Channel> = when (categoryId) {
-        null, ALL -> channels
-        FAVOURITES -> prefs.favouriteIds("live").mapNotNull { channelsById[it] }
-        RECENT -> prefs.recentChannels.mapNotNull { channelsById[it] }
-        else -> channels.filter { it.categoryId == categoryId }
+    suspend fun channelIds(category: String? = null, groupId: Long? = null): List<String> =
+        withContext(Dispatchers.IO) { db.channelIds(category, groupId) }
+
+    suspend fun channelsByIds(ids: List<String>): List<Channel> =
+        withContext(Dispatchers.IO) { db.channelsByIds(ids) }
+
+    suspend fun channel(id: String): Channel? = withContext(Dispatchers.IO) { db.channel(id) }
+
+    suspend fun movies(
+        category: String? = null, search: String? = null,
+        sort: String = "added", limit: Int = 60, offset: Int = 0
+    ): List<Movie> = withContext(Dispatchers.IO) { db.movies(category, search, sort, limit, offset) }
+
+    suspend fun seriesPage(
+        category: String? = null, search: String? = null,
+        sort: String = "added", limit: Int = 60, offset: Int = 0
+    ): List<Series> = withContext(Dispatchers.IO) { db.series(category, search, sort, limit, offset) }
+
+    suspend fun titleCount(kind: String, category: String? = null, search: String? = null): Int =
+        withContext(Dispatchers.IO) { db.titleCount(kind, category, search) }
+
+    suspend fun moviesByIds(ids: List<String>): List<Movie> =
+        withContext(Dispatchers.IO) { db.moviesByIds(ids) }
+
+    suspend fun seriesByIds(ids: List<String>): List<Series> =
+        withContext(Dispatchers.IO) { db.seriesByIds(ids) }
+
+    suspend fun search(term: String, limit: Int = 40): CatalogueDb.SearchResult =
+        withContext(Dispatchers.IO) { db.search(term, limit) }
+
+    suspend fun archiveChannels(limit: Int = 500): List<Channel> =
+        withContext(Dispatchers.IO) { db.archiveChannels(limit) }
+
+    // ---------------------------------------------------- channel management
+
+    suspend fun setHidden(ids: List<String>, hidden: Boolean) = withContext(Dispatchers.IO) {
+        db.setHidden(ids, hidden)
+        refreshLocalState()
     }
 
-    fun moviesIn(categoryId: String?): List<Movie> = when (categoryId) {
-        null, ALL -> movies
-        FAVOURITES -> prefs.favouriteIds("movie").toSet().let { ids -> movies.filter { it.streamId in ids } }
-        else -> movies.filter { it.categoryId == categoryId }
+    suspend fun renameChannel(id: String, name: String?) = withContext(Dispatchers.IO) {
+        db.renameChannel(id, name)
     }
 
-    fun seriesIn(categoryId: String?): List<Series> = when (categoryId) {
-        null, ALL -> series
-        FAVOURITES -> prefs.favouriteIds("series").toSet().let { ids -> series.filter { it.seriesId in ids } }
-        else -> series.filter { it.categoryId == categoryId }
+    suspend fun setChannelNumber(id: String, num: Int?) = withContext(Dispatchers.IO) {
+        db.setCustomNumber(id, num)
+    }
+
+    suspend fun setChannelOrder(ids: List<String>) = withContext(Dispatchers.IO) { db.setOrder(ids) }
+
+    suspend fun resetChannelPrefs() = withContext(Dispatchers.IO) {
+        db.resetChannelPrefs()
+        refreshLocalState()
+    }
+
+    suspend fun createGroup(name: String): Long = withContext(Dispatchers.IO) {
+        val id = db.createGroup(name)
+        refreshLocalState()
+        id
+    }
+
+    suspend fun deleteGroup(id: Long) = withContext(Dispatchers.IO) {
+        db.deleteGroup(id)
+        refreshLocalState()
+    }
+
+    suspend fun addToGroup(groupId: Long, ids: List<String>) = withContext(Dispatchers.IO) {
+        db.addToGroup(groupId, ids)
+        refreshLocalState()
+    }
+
+    suspend fun removeFromGroup(groupId: Long, ids: List<String>) = withContext(Dispatchers.IO) {
+        db.removeFromGroup(groupId, ids)
+        refreshLocalState()
     }
 
     // ---------------------------------------------------------------- detail
@@ -157,7 +220,7 @@ class Repository(
 
     private fun cacheDetail(key: String, value: Any) {
         detailCache[key] = value
-        while (detailCache.size > 40) {
+        while (detailCache.size > 30) {
             val oldest = detailCache.keys.firstOrNull() ?: break
             detailCache.remove(oldest)
         }
@@ -174,19 +237,13 @@ class Repository(
     fun episodeUrl(episode: Episode): String =
         client.episodeUrl(episode.id, episode.extension)
 
-    // ------------------------------------------------------------ disk cache
-
-    private fun clearDiskCache() {
-        runCatching { cacheDir.listFiles()?.forEach { it.delete() } }
-    }
-
-    suspend fun cacheSizeBytes(): Long = withContext(Dispatchers.IO) {
-        cacheDir.listFiles()?.sumOf { it.length() } ?: 0L
-    }
+    /** Catch-up / timeshift for a past programme on an archive-capable channel. */
+    fun catchupUrl(streamId: String, startMillis: Long, durationMinutes: Int): String =
+        client.catchupUrl(streamId, durationMinutes, com.aurum.tv.util.catchupStamp(startMillis))
 
     companion object {
-        const val ALL = "__all__"
-        const val FAVOURITES = "__fav__"
-        const val RECENT = "__recent__"
+        const val ALL = CatalogueDb.ALL
+        const val FAVOURITES = CatalogueDb.FAVOURITES
+        const val RECENT = CatalogueDb.RECENT
     }
 }
