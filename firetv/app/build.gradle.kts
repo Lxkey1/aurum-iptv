@@ -14,8 +14,8 @@ android {
         // Fire OS 5 (Fire TV Stick 2nd gen) is API 22 — still plenty of them in use.
         minSdk = 22
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 3
+        versionName = "1.1.0"
     }
 
     // The sideload key is deliberately NOT in version control. Generate your own

@@ -25,10 +25,28 @@ Both sign in with the same thing — your provider's **server URL, username and 
 
 - **Live TV** — every category, channel logos, now/next with a progress bar, favourites and recently-watched
 - **TV Guide** — the provider's full XMLTV guide, downloaded and indexed on-device, with programme details
+- **Catch-up** — watch a programme that has already aired, on any channel whose provider keeps an archive
 - **Films & box sets** — poster grids, sorting and filtering, synopsis/cast/rating, seasons and episodes
-- **Search** — one box across channels, films, box sets *and* everything coming up in the guide
+- **Channel management** — hide the dead ones, rename and renumber the ones you watch, build your own groups
+- **Search** — one full-text index across channels, films, box sets *and* everything coming up in the guide
+- **TMDB artwork** — optional free key fills in real backdrops, synopses, cast, runtime and trailers
 - **Built-in player** — quality/resolution switching, audio tracks, subtitles, picture fit, resume where you left off
 - **Continue watching** — films and episodes remember their position, box sets roll on to the next episode
+
+### Built for large lines
+
+Xtream lines get big. The one this was developed against holds **53,683 channels, 158,173 films and 36,254 series** — a quarter of a million items.
+
+Both apps keep the catalogue in **SQLite with a full-text index** rather than in memory, and every screen is a paged query. That is not a micro-optimisation: holding it in memory cost 493 MB on the desktop, and on a Fire TV Stick — which allows an app 192–512 MB — it would simply run out of memory and die.
+
+| | in memory | SQLite |
+|---|---|---|
+| Search across all three kinds | 51 ms | **0.8 ms** |
+| Newest 50 films | 103 ms | **0.4 ms** |
+| Memory held | 493 MB | ~0 |
+| Cold start | 569 ms parse | instant |
+
+On Android the ingest streams with `JsonReader`, writing each item straight to SQLite, so peak memory stays flat no matter how large the line is.
 
 ---
 
@@ -125,6 +143,12 @@ sdk.dir=C:/Users/you/AppData/Local/Android/Sdk
 
 ---
 
+## Artwork & metadata (optional)
+
+Provider metadata for films and box sets is usually just a title and a small poster. Connect a free [TMDB](https://www.themoviedb.org/) key in **Settings → Artwork & metadata** and Aurum fills in proper backdrops, synopses, cast, runtime, certification and trailers.
+
+Titles are enriched **when you open them**, not in bulk — enriching a six-figure library up front would be an enormous number of API calls for titles nobody opens. Results are cached permanently. Only a title and year ever leave your machine; your line details never do.
+
 ## Signing in
 
 Enter your provider's **server URL** (e.g. `http://line.example.com:8080`), **username** and **password**.
@@ -141,7 +165,11 @@ Credentials are stored **only on your own machine**: Windows Data Protection on 
 
 **"Access denied" or the stream drops after a few seconds.** Your line is probably at its connection limit — check *Settings → Account → Connections*. Close the stream elsewhere and try again.
 
-**The guide is empty for most channels.** Providers frequently leave `epg_channel_id` blank. Aurum falls back to matching on channel name; *Settings → TV guide* shows how many matched.
+**The guide is empty for most channels.** Providers frequently leave `epg_channel_id` blank, and most only supply guide data for a few thousand channels regardless. Aurum falls back to matching on channel name; *Settings → TV guide* shows how many matched.
+
+**Catch-up is greyed out.** Only channels whose provider keeps an archive support it — typically the main national channels, often 1–2% of a large line. Aurum marks those with a **Catch-up** badge in the guide.
+
+**Too many channels to navigate.** That is what channel management is for: hide, renumber and group from **Live TV → Manage** (desktop). Your customisation survives a catalogue refresh.
 
 **Nothing plays and every channel errors.** Check the account expiry and status in Settings, then try a different **player identity** (User-Agent) — some panels only serve players they recognise.
 

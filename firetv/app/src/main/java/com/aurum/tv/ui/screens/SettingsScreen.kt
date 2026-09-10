@@ -55,7 +55,7 @@ fun SettingsScreen(state: AppState, revision: Int) {
         item {
             Column {
                 Text("Settings", color = Aurum.Text, style = MaterialTheme.typography.headlineLarge)
-                Text("Aurum TV 1.0.0", color = Aurum.Text3, style = MaterialTheme.typography.bodyMedium)
+                Text("Aurum TV 1.1.0", color = Aurum.Text3, style = MaterialTheme.typography.bodyMedium)
             }
         }
 
