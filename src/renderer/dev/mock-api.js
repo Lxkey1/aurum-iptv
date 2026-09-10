@@ -2,29 +2,20 @@
  * DEV ONLY — a fake `window.aurum` so the whole UI can be exercised in a plain
  * browser without a real Xtream line. Loaded by dev-preview.html; never shipped
  * (see the "files" globs in package.json).
+ *
+ * Mirrors the SQLite-backed API: the renderer asks for pages, so this fakes a
+ * catalogue big enough that paging actually engages.
  */
 (function mockAurum() {
   const ok = (data) => Promise.resolve({ ok: true, data });
   const fail = (error) => Promise.resolve({ ok: false, error, code: 'MOCK' });
 
   const rand = (seed) => {
-    let x = Math.sin(seed) * 10000;
+    const x = Math.sin(seed) * 10000;
     return x - Math.floor(x);
   };
 
-  const GENRES = ['Drama', 'Action', 'Comedy', 'Documentary', 'Thriller', 'Sci-Fi', 'Sport'];
-  const COUNTRIES = ['UK', 'US', 'IE', 'CA', 'AU'];
-
   // ---------------------------------------------------------- fake catalogue
-
-  const liveCategories = [
-    { category_id: '1', category_name: 'UK | Entertainment' },
-    { category_id: '2', category_name: 'UK | Sports' },
-    { category_id: '3', category_name: 'UK | Movies' },
-    { category_id: '4', category_name: 'US | News' },
-    { category_id: '5', category_name: 'Documentary' },
-    { category_id: '6', category_name: 'Kids' }
-  ];
 
   const CHANNEL_NAMES = [
     'BBC One HD', 'BBC Two HD', 'ITV1 HD', 'Channel 4 HD', 'Channel 5 HD', 'Sky Atlantic HD',
@@ -37,19 +28,6 @@
     'CBeebies HD', 'CBBC HD', 'Cartoon Network', 'Nickelodeon', 'Disney Channel'
   ];
 
-  const liveStreams = CHANNEL_NAMES.map((name, i) => ({
-    num: i + 1,
-    name,
-    stream_type: 'live',
-    stream_id: 1000 + i,
-    stream_icon: '',
-    epg_channel_id: `mock.${i}`,
-    added: String(Math.floor(Date.now() / 1000) - i * 8000),
-    category_id: String(Math.min(6, Math.floor(i / 7) + 1)),
-    tv_archive: i % 3 === 0 ? 1 : 0,
-    direct_source: ''
-  }));
-
   const MOVIE_TITLES = [
     'The Midnight Archive', 'Northern Lights', 'Cold Harbour', 'The Glass Quarter', 'Salt & Iron',
     'A Quiet Signal', 'The Long Descent', 'Paper Cities', 'Whitecap', 'The Gilded Room',
@@ -59,55 +37,79 @@
     'Featherstone', 'Low Tide', 'The Errand', 'Marble Heart', 'Vanishing Point'
   ];
 
-  const vodCategories = [
-    { category_id: '10', category_name: 'New Releases' },
-    { category_id: '11', category_name: 'Action & Adventure' },
-    { category_id: '12', category_name: 'Drama' },
-    { category_id: '13', category_name: '4K UHD' }
-  ];
-
-  const vodStreams = MOVIE_TITLES.map((name, i) => ({
-    num: i + 1,
-    name,
-    stream_type: 'movie',
-    stream_id: 5000 + i,
-    stream_icon: '',
-    rating: (5 + rand(i) * 5).toFixed(1),
-    rating_5based: 4,
-    added: String(Math.floor(Date.now() / 1000) - i * 40000),
-    category_id: String(10 + (i % 4)),
-    container_extension: 'mp4',
-    year: String(2015 + (i % 10)),
-    genre: GENRES[i % GENRES.length],
-    plot: 'A slow-burning story about people at the edge of something they cannot name, told across one long winter.'
-  }));
-
   const SERIES_TITLES = [
     'The Fold', 'Harrowgate', 'Signal Hill', 'The Pale Coast', 'Eastwater',
     'Chapter and Verse', 'The Understudy', 'Marram', 'Deep Field', 'The Quiet Part',
     'Ravensbourne', 'Sixth Sunday'
   ];
 
-  const seriesCategories = [
-    { category_id: '20', category_name: 'Box Sets' },
-    { category_id: '21', category_name: 'Crime & Mystery' },
-    { category_id: '22', category_name: 'Comedy' }
-  ];
+  const GENRES = ['Drama', 'Action', 'Comedy', 'Documentary', 'Thriller', 'Sci-Fi', 'Sport'];
 
-  const seriesList = SERIES_TITLES.map((name, i) => ({
+  // A few hundred of each so paging actually kicks in during preview.
+  // Placeholder artwork, so the preview shows the design as it will really look.
+  const poster = (i) => `https://picsum.photos/seed/aurum${i}/400/600`;
+  const logo = (i) => `https://picsum.photos/seed/logo${i}/160/120`;
+
+  const channels = Array.from({ length: 400 }, (_, i) => ({
+    id: String(1000 + i),
+    name: CHANNEL_NAMES[i % CHANNEL_NAMES.length] + (i >= CHANNEL_NAMES.length ? ` ${Math.floor(i / CHANNEL_NAMES.length) + 1}` : ''),
     num: i + 1,
-    name,
-    series_id: 9000 + i,
-    cover: '',
-    plot: 'Six episodes of very good television about a town that keeps its secrets badly.',
-    cast: 'A. Player, B. Performer, C. Thespian',
-    director: 'D. Filmmaker',
-    genre: GENRES[i % GENRES.length],
-    releaseDate: `${2018 + (i % 7)}-03-14`,
-    last_modified: String(Math.floor(Date.now() / 1000) - i * 90000),
-    rating: (6 + rand(i + 99) * 4).toFixed(1),
-    category_id: String(20 + (i % 3))
+    logo: i % 4 === 0 ? '' : logo(i),
+    cat: String(1 + (i % 6)),
+    epg_id: `mock.${i}`,
+    archive: i % 7 === 0 ? 1 : 0,
+    added: 1700000000 - i,
+    hidden: 0
   }));
+
+  const movies = Array.from({ length: 300 }, (_, i) => ({
+    id: String(5000 + i),
+    name: MOVIE_TITLES[i % MOVIE_TITLES.length] + (i >= MOVIE_TITLES.length ? ` ${Math.floor(i / MOVIE_TITLES.length) + 1}` : ''),
+    cover: poster(i),
+    rating: Number((5 + rand(i) * 5).toFixed(1)),
+    year: String(2015 + (i % 10)),
+    cat: String(10 + (i % 4)),
+    ext: 'mp4',
+    added: 1700000000 - i * 400,
+    genre: GENRES[i % GENRES.length],
+    plot: 'A slow-burning story about people at the edge of something they cannot name, told across one long winter.'
+  }));
+
+  const series = Array.from({ length: 120 }, (_, i) => ({
+    id: String(9000 + i),
+    name: SERIES_TITLES[i % SERIES_TITLES.length] + (i >= SERIES_TITLES.length ? ` ${Math.floor(i / SERIES_TITLES.length) + 1}` : ''),
+    cover: poster(500 + i),
+    rating: Number((6 + rand(i + 99) * 4).toFixed(1)),
+    year: String(2018 + (i % 7)),
+    cat: String(20 + (i % 3)),
+    modified: 1700000000 - i * 900,
+    genre: GENRES[i % GENRES.length],
+    plot: 'Six episodes of very good television about a town that keeps its secrets badly.'
+  }));
+
+  const categories = {
+    live: [
+      { id: '1', name: 'UK | Entertainment', count: 67 },
+      { id: '2', name: 'UK | Sports', count: 67 },
+      { id: '3', name: 'UK | Movies', count: 67 },
+      { id: '4', name: 'US | News', count: 67 },
+      { id: '5', name: 'Documentary', count: 66 },
+      { id: '6', name: 'Kids', count: 66 }
+    ],
+    movie: [
+      { id: '10', name: 'New Releases', count: 75 },
+      { id: '11', name: 'Action & Adventure', count: 75 },
+      { id: '12', name: 'Drama', count: 75 },
+      { id: '13', name: '4K UHD', count: 75 }
+    ],
+    series: [
+      { id: '20', name: 'Box Sets', count: 40 },
+      { id: '21', name: 'Crime & Mystery', count: 40 },
+      { id: '22', name: 'Comedy', count: 40 }
+    ]
+  };
+
+  let groups = [{ id: 1, name: 'My Sports', count: 8 }];
 
   // ---------------------------------------------------------------- fake EPG
 
@@ -118,23 +120,21 @@
   ];
 
   let epgReady = false;
+
   const programmesFor = (streamId) => {
     const idx = Number(streamId) - 1000;
     const out = [];
-    const base = new Date().setMinutes(0, 0, 0) - 4 * 3600 * 1000;
-    let cursor = base;
+    let cursor = new Date().setMinutes(0, 0, 0) - 4 * 3600 * 1000;
     for (let i = 0; i < 60; i += 1) {
       const mins = [30, 45, 60, 90, 120][Math.floor(rand(idx * 100 + i) * 5)];
-      const start = cursor;
-      const end = cursor + mins * 60000;
       out.push({
-        s: start,
-        e: end,
+        s: cursor,
+        e: cursor + mins * 60000,
         t: PROGRAMME_TITLES[(idx + i) % PROGRAMME_TITLES.length],
         d: 'A programme description supplied by the mock guide, long enough to show how the detail sheet wraps a couple of lines of copy.',
         c: GENRES[(idx + i) % GENRES.length]
       });
-      cursor = end;
+      cursor += mins * 60000;
     }
     return out;
   };
@@ -166,24 +166,59 @@
     fitMode: 'contain',
     reduceMotion: false,
     startPage: 'home',
-    catchupEnabled: true
+    catchupEnabled: true,
+    tmdbKey: '',
+    tmdbLanguage: 'en-GB',
+    tmdbAuto: true
   };
 
-  const favorites = { live: ['1000', '1012'], movie: ['5003'], series: ['9001'] };
+  const favorites = { live: ['1000', '1012', '1025'], movie: ['5003', '5007'], series: ['9001'] };
   const continueWatching = {
     'movie:5001': {
-      key: 'movie:5001', type: 'movie', id: 5001, name: MOVIE_TITLES[1],
-      cover: '', position: 1840, duration: 6900, updatedAt: Date.now() - 3600000, ext: 'mp4'
+      key: 'movie:5001', type: 'movie', id: '5001', name: MOVIE_TITLES[1],
+      cover: 'https://picsum.photos/seed/aurum1/400/600', position: 1840, duration: 6900, updatedAt: Date.now() - 3600000, ext: 'mp4'
     },
     'episode:70011': {
-      key: 'episode:70011', type: 'episode', id: 70011, seriesId: 9000,
+      key: 'episode:70011', type: 'episode', id: '70011', seriesId: '9000',
       name: SERIES_TITLES[0], subtitle: 'S01E02 · The Second Door',
-      cover: '', position: 900, duration: 2700, updatedAt: Date.now() - 7200000,
+      cover: 'https://picsum.photos/seed/aurum500/400/600', position: 900, duration: 2700, updatedAt: Date.now() - 7200000,
       ext: 'mp4', meta: { season: '1', episode: 2 }
     }
   };
 
-  const epgProgressListeners = new Set();
+  const hidden = new Set();
+  const customNames = new Map();
+  const epgListeners = new Set();
+  const syncListeners = new Set();
+
+  const stats = () => ({
+    channels: channels.length,
+    movies: movies.length,
+    series: series.length,
+    hidden: hidden.size,
+    groups: groups.length,
+    updatedAt: Date.now(),
+    sizeBytes: 83_400_000
+  });
+
+  const decorate = (c) => ({ ...c, name: customNames.get(c.id) || c.name, hidden: hidden.has(c.id) ? 1 : 0 });
+
+  const filterChannels = ({ category, search, includeHidden, groupId }) => {
+    let list = channels.map(decorate);
+    if (groupId != null) list = list.slice(0, 8);
+    if (!includeHidden) list = list.filter((c) => !c.hidden);
+    if (category) list = list.filter((c) => c.cat === String(category));
+    if (search) list = list.filter((c) => c.name.toLowerCase().includes(String(search).toLowerCase()));
+    return list;
+  };
+
+  const sortTitles = (list, sort, recencyKey) => {
+    const copy = [...list];
+    if (sort === 'name') return copy.sort((a, b) => a.name.localeCompare(b.name));
+    if (sort === 'rating') return copy.sort((a, b) => b.rating - a.rating);
+    if (sort === 'year') return copy.sort((a, b) => Number(b.year) - Number(a.year));
+    return copy.sort((a, b) => b[recencyKey] - a[recencyKey]);
+  };
 
   window.aurum = {
     window: {
@@ -196,48 +231,118 @@
       showError: (t, m) => { alert(`${t}\n\n${m}`); return ok(true); }
     },
     auth: {
-      login: ({ server, username, password }) => {
-        if (!password || password === 'wrong') return fail('Incorrect username or password.');
-        return ok(accountPayload(server, username));
-      },
+      login: ({ server, username, password }) =>
+        (!password || password === 'wrong')
+          ? fail('Incorrect username or password.')
+          : ok(accountPayload(server, username)),
       restore: () => ok(accountPayload('http://mock.provider.tv:8080', 'demo_user')),
       hasProfile: () => ok(window.__MOCK_SIGNED_IN__ !== false),
       logout: () => { window.__MOCK_SIGNED_IN__ = false; return ok(true); }
     },
+
+    catalogue: {
+      sync: () => new Promise((resolve) => {
+        let pct = 0;
+        const timer = setInterval(() => {
+          pct += 15;
+          syncListeners.forEach((fn) => fn({ text: pct < 50 ? 'Fetching channels…' : 'Indexing…', pct }));
+          if (pct >= 100) { clearInterval(timer); resolve({ ok: true, data: stats() }); }
+        }, 150);
+      }),
+      stats: () => ok(stats()),
+      categories: (kind) => ok(categories[kind] || []),
+      channels: (opts = {}) => {
+        const all = filterChannels(opts);
+        const { limit = 100, offset = 0 } = opts;
+        return ok({ rows: all.slice(offset, offset + limit), total: all.length });
+      },
+      channelIds: (opts = {}) => ok(filterChannels(opts).map((c) => c.id)),
+      titles: (kind, { category, search, sort = 'added', limit = 60, offset = 0 } = {}) => {
+        let list = kind === 'movie' ? movies : series;
+        if (category) list = list.filter((t) => t.cat === String(category));
+        if (search) list = list.filter((t) => t.name.toLowerCase().includes(String(search).toLowerCase()));
+        list = sortTitles(list, sort, kind === 'movie' ? 'added' : 'modified');
+        return ok({ rows: list.slice(offset, offset + limit), total: list.length });
+      },
+      byIds: (kind, ids) => {
+        const source = kind === 'live' ? channels.map(decorate) : kind === 'movie' ? movies : series;
+        const index = new Map(source.map((r) => [String(r.id), r]));
+        return ok((ids || []).map((id) => index.get(String(id))).filter(Boolean));
+      },
+      one: (kind, id) => {
+        const source = kind === 'live' ? channels.map(decorate) : kind === 'movie' ? movies : series;
+        return ok(source.find((r) => String(r.id) === String(id)) || null);
+      },
+      search: (term, limit = 60) => {
+        const needle = String(term || '').toLowerCase();
+        const match = (r) => r.name.toLowerCase().includes(needle);
+        return ok({
+          live: channels.map(decorate).filter((c) => !c.hidden && match(c)).slice(0, limit),
+          movie: movies.filter(match).slice(0, limit),
+          series: series.filter(match).slice(0, limit)
+        });
+      },
+      archiveChannels: (limit = 500) => ok(channels.map(decorate).filter((c) => c.archive).slice(0, limit)),
+      onProgress: (fn) => { syncListeners.add(fn); return () => syncListeners.delete(fn); }
+    },
+
+    channels: {
+      setHidden: (ids, h) => {
+        (ids || []).forEach((id) => (h ? hidden.add(String(id)) : hidden.delete(String(id))));
+        return ok(hidden.size);
+      },
+      setOrder: () => ok(true),
+      rename: (id, name) => { customNames.set(String(id), name); return ok(true); },
+      setNumber: () => ok(true),
+      resetPrefs: () => { hidden.clear(); customNames.clear(); return ok(true); }
+    },
+
+    groups: {
+      list: () => ok(groups),
+      create: (name) => { const id = groups.length + 1; groups.push({ id, name, count: 0 }); return ok(id); },
+      rename: (id, name) => { const g = groups.find((x) => x.id === id); if (g) g.name = name; return ok(true); },
+      remove: (id) => { groups = groups.filter((g) => g.id !== id); return ok(true); },
+      setChannels: () => ok(true),
+      add: (id, ids) => { const g = groups.find((x) => x.id === id); if (g) g.count += (ids || []).length; return ok(true); },
+      removeChannels: () => ok(true)
+    },
+
     xtream: {
-      liveCategories: () => ok(liveCategories),
-      vodCategories: () => ok(vodCategories),
-      seriesCategories: () => ok(seriesCategories),
-      liveStreams: () => ok(liveStreams),
-      vodStreams: () => ok(vodStreams),
-      series: () => ok(seriesList),
       seriesInfo: (seriesId) => ok(mockSeriesInfo(seriesId)),
       vodInfo: (vodId) => ok(mockVodInfo(vodId)),
       shortEpg: () => ok({ epg_listings: [] }),
       streamUrl: (type, id, ext) => ok(`http://mock.provider.tv:8080/${type}/demo_user/secret/${id}.${ext || 'ts'}`),
-      catchupUrl: () => ok('http://mock.provider.tv:8080/streaming/timeshift.php'),
+      catchupUrl: () => ok('http://mock.provider.tv:8080/streaming/timeshift.php?mock=1'),
       accountInfo: () => ok(accountPayload('http://mock.provider.tv:8080', 'demo_user'))
     },
+
+    tmdb: {
+      status: () => ok({ enabled: false, language: 'en-GB', enriched: 0, notFound: 0 }),
+      setKey: (key) => ok({ enabled: Boolean(key) }),
+      enrich: () => ok(null),
+      clear: () => ok({ enriched: 0, notFound: 0 })
+    },
+
     epg: {
       status: () => ok({ loading: false, ready: epgReady, error: null, stats: epgStats() }),
       refresh: () => new Promise((resolve) => {
         let pct = 0;
         const timer = setInterval(() => {
           pct += 12;
-          epgProgressListeners.forEach((fn) =>
+          epgListeners.forEach((fn) =>
             fn({ phase: pct < 60 ? 'download' : 'parse', text: pct < 60 ? `Downloading guide — ${pct} MB` : 'Parsing programmes…', pct })
           );
           if (pct >= 100) {
             clearInterval(timer);
             epgReady = true;
-            epgProgressListeners.forEach((fn) => fn({ phase: 'done', text: 'Guide ready', pct: 100 }));
+            epgListeners.forEach((fn) => fn({ phase: 'done', text: 'Guide ready', pct: 100 }));
             resolve({ ok: true, data: { ok: true, stats: epgStats() } });
           }
-        }, 220);
+        }, 200);
       }),
       cancel: () => ok(true),
       clear: () => { epgReady = false; return ok(true); },
-      mapChannels: (channels) => ok({ matched: epgReady ? (channels || []).length : 0, total: (channels || []).length, ready: epgReady }),
+      mapChannels: () => ok({ matched: epgReady ? channels.length : 0, total: channels.length, ready: epgReady }),
       query: (streamIds, from, to) => {
         const out = {};
         for (const id of streamIds || []) {
@@ -254,27 +359,26 @@
         if (!epgReady) return ok([]);
         const needle = String(term).toLowerCase();
         const results = [];
-        for (const channel of liveStreams.slice(0, 12)) {
-          for (const p of programmesFor(channel.stream_id)) {
+        for (const channel of channels.slice(0, 12)) {
+          for (const p of programmesFor(channel.id)) {
             if (p.e > Date.now() && p.t.toLowerCase().includes(needle)) {
-              results.push({ streamId: String(channel.stream_id), channel: channel.name, ...p });
+              results.push({ streamId: channel.id, channel: channel.name, ...p });
             }
           }
         }
         return ok(results.slice(0, 40));
       },
-      onProgress: (fn) => {
-        epgProgressListeners.add(fn);
-        return () => epgProgressListeners.delete(fn);
-      }
+      onProgress: (fn) => { epgListeners.add(fn); return () => epgListeners.delete(fn); }
     },
+
     store: {
       getState: () => ok({
         settings, favorites, continueWatching,
         recentChannels: ['1003', '1014', '1025'],
         epg: { loading: false, ready: epgReady, error: null, stats: epgStats() },
         cache: { files: 6, size: 1248000 },
-        appVersion: '1.0.0-mock'
+        catalogue: stats(),
+        appVersion: '1.1.0-mock'
       }),
       setSettings: (patch) => { Object.assign(settings, patch); return ok(settings); },
       toggleFavorite: (kind, id) => {
@@ -293,7 +397,7 @@
 
   function epgStats() {
     return epgReady
-      ? { channels: 40, channelsWithData: 40, programmes: 2400, from: Date.now() - 6 * 3.6e6, to: Date.now() + 72 * 3.6e6, builtAt: Date.now() }
+      ? { channels: 400, channelsWithData: 400, programmes: 24000, from: Date.now() - 6 * 3.6e6, to: Date.now() + 72 * 3.6e6, builtAt: Date.now() }
       : null;
   }
 
@@ -306,58 +410,53 @@
         is_trial: '0',
         active_cons: '1',
         max_connections: '3',
-        created_at: String(Math.floor(Date.now() / 1000) - 300 * 86400),
         auth: 1
       },
-      serverInfo: { url: 'mock.provider.tv', port: '8080', timezone: 'Europe/London', server_protocol: 'http' },
+      serverInfo: { url: 'mock.provider.tv', port: '8080', timezone: 'Europe/London' },
       credentials: { host: server || 'http://mock.provider.tv:8080', username: username || 'demo_user' }
     };
   }
 
   function mockVodInfo(vodId) {
-    const movie = vodStreams.find((m) => String(m.stream_id) === String(vodId)) || vodStreams[0];
+    const movie = movies.find((m) => String(m.id) === String(vodId)) || movies[0];
     return {
       info: {
         movie_image: '', name: movie.name, plot: movie.plot,
         cast: 'A. Player, B. Performer, C. Thespian, D. Understudy',
         director: 'E. Auteur', genre: movie.genre,
         releasedate: `${movie.year}-06-01`, rating: movie.rating,
-        duration: '1:52:00', duration_secs: 6720, country: 'United Kingdom',
-        backdrop_path: [], youtube_trailer: ''
+        duration: '1:52:00', duration_secs: 6720, backdrop_path: [], youtube_trailer: ''
       },
-      movie_data: {
-        stream_id: movie.stream_id, name: movie.name,
-        container_extension: 'mp4', category_id: movie.category_id
-      }
+      movie_data: { stream_id: movie.id, name: movie.name, container_extension: 'mp4' }
     };
   }
 
   function mockSeriesInfo(seriesId) {
-    const series = seriesList.find((s) => String(s.series_id) === String(seriesId)) || seriesList[0];
+    const s = series.find((x) => String(x.id) === String(seriesId)) || series[0];
     const episodes = {};
     const seasonCount = 2 + (Number(seriesId) % 2);
     for (let season = 1; season <= seasonCount; season += 1) {
       episodes[String(season)] = Array.from({ length: 6 }, (_, i) => ({
         id: String(Number(seriesId) * 10 + season * 100 + i),
         episode_num: i + 1,
-        title: `Episode ${i + 1}: ${['The Arrival', 'The Second Door', 'Low Water', 'Ash Wednesday', 'The Reckoning', 'Homecoming'][i]}`,
+        title: ['The Arrival', 'The Second Door', 'Low Water', 'Ash Wednesday', 'The Reckoning', 'Homecoming'][i],
         container_extension: 'mp4',
         season,
         info: {
           movie_image: '', plot: 'Something happens, then something else happens, and by the end of it nobody is quite the same.',
-          duration_secs: 2700, duration: '00:45:00', rating: '7.8', releasedate: '2021-04-0' + (i + 1)
+          duration_secs: 2700, duration: '00:45:00', rating: '7.8', releasedate: `2021-04-0${i + 1}`
         }
       }));
     }
     return {
       info: {
-        name: series.name, cover: '', plot: series.plot, cast: series.cast,
-        director: series.director, genre: series.genre, releaseDate: series.releaseDate,
-        rating: series.rating, backdrop_path: []
+        name: s.name, cover: '', plot: s.plot, cast: 'A. Player, B. Performer',
+        director: 'D. Filmmaker', genre: s.genre, releaseDate: `${s.year}-03-14`,
+        rating: s.rating, backdrop_path: []
       },
       episodes
     };
   }
 
-  console.log('[mock] window.aurum installed —', liveStreams.length, 'channels,', vodStreams.length, 'films,', seriesList.length, 'series');
+  console.log('[mock] window.aurum installed —', channels.length, 'channels,', movies.length, 'films,', series.length, 'series');
 })();
