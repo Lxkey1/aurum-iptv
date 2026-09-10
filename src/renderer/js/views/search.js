@@ -1,14 +1,18 @@
-/** Unified search across channels, films, box sets and the TV guide. */
+/**
+ * Unified search.
+ *
+ * Backed by one FTS5 index spanning channels, films and box sets, so a query
+ * across a quarter of a million items returns in single-digit milliseconds
+ * instead of scanning every title in the renderer.
+ */
 
 import { h, icon, clear } from '../util/dom.js';
 import { timeHM, relativeDay, tidyChannelName } from '../util/format.js';
-import { channelRow, lazyList } from '../ui/cards.js';
+import { channelRow } from '../ui/cards.js';
 import { emptyState, spinnerBlock } from '../ui/feedback.js';
 import { movieCard, seriesCard } from './home.js';
 import { playChannel } from '../playback.js';
 import * as store from '../state.js';
-
-const LIMIT = 60;
 
 export async function renderSearch(host, { query }) {
   clear(host);
@@ -32,28 +36,24 @@ export async function renderSearch(host, { query }) {
   page.appendChild(resultsHost);
   resultsHost.appendChild(spinnerBlock('Searching…'));
 
-  // Load whatever is not cached yet, but do not block on failures.
-  await Promise.allSettled([store.ensureLive(), store.ensureMovies(), store.ensureSeries()]);
-
-  const needle = term.toLowerCase();
-  const match = (value) => String(value || '').toLowerCase().includes(needle);
-
-  const channels = store.state.liveChannels.filter((c) => match(c.name));
-  const movies = store.state.movies.filter((m) => match(m.name));
-  const series = store.state.series.filter((s) => match(s.name));
-
+  const started = performance.now();
+  let results = { live: [], movie: [], series: [] };
   let programmes = [];
-  if (store.state.epg.ready) {
-    try {
-      programmes = await store.epgSearch(term, 120);
-    } catch {
-      programmes = [];
-    }
+
+  try {
+    [results, programmes] = await Promise.all([
+      store.searchCatalogue(term, 60),
+      store.state.epg.ready ? store.epgSearch(term, 60).catch(() => []) : Promise.resolve([])
+    ]);
+  } catch (err) {
+    clear(resultsHost).appendChild(emptyState('alert', 'Search failed', err.message));
+    return;
   }
 
+  const elapsed = performance.now() - started;
   clear(resultsHost);
 
-  const total = channels.length + movies.length + series.length + programmes.length;
+  const total = results.live.length + results.movie.length + results.series.length + programmes.length;
   if (!total) {
     resultsHost.appendChild(
       emptyState('search', 'No matches',
@@ -62,86 +62,78 @@ export async function renderSearch(host, { query }) {
     return;
   }
 
+  resultsHost.appendChild(
+    h('p.dim', { style: { fontSize: '11.5px', marginBottom: '18px' } },
+      `${total} result${total === 1 ? '' : 's'} in ${elapsed.toFixed(0)} ms`)
+  );
+
   // ------------------------------------------------------------- channels
-  if (channels.length) {
+  if (results.live.length) {
     const list = h('div.col.gap-1');
-    const shown = channels.slice(0, LIMIT);
     let epgMap = {};
-    try {
-      if (store.state.epg.ready) epgMap = await store.epgNowNext(shown.map((c) => String(c.stream_id)));
-    } catch {
-      /* optional */
+    if (store.state.epg.ready) {
+      try {
+        epgMap = await store.epgNowNext(results.live.map((c) => String(c.id)));
+      } catch {
+        /* optional */
+      }
     }
-    shown.forEach((channel, i) =>
+    const ids = results.live.map((c) => String(c.id));
+    results.live.forEach((channel, i) =>
       list.appendChild(
         channelRow(channel, {
-          epg: epgMap[String(channel.stream_id)],
+          epg: epgMap[String(channel.id)],
           index: i,
-          onPlay: () => playChannel(channel, channels)
+          onPlay: () => playChannel(channel, { ids })
         })
       )
     );
-    resultsHost.appendChild(section('Live channels', channels.length, list, channels.length > LIMIT));
+    resultsHost.appendChild(section('Live channels', results.live.length, list));
   }
 
-  // ---------------------------------------------------------------- films
-  if (movies.length) {
-    const grid = h('div.grid');
-    lazyList(grid, movies.slice(0, 120), (movie) => movieCard(movie), { chunk: 30 });
-    resultsHost.appendChild(section('Films', movies.length, grid, movies.length > 120));
+  if (results.movie.length) {
+    resultsHost.appendChild(
+      section('Films', results.movie.length, h('div.grid', results.movie.map(movieCard)))
+    );
   }
 
-  // -------------------------------------------------------------- box sets
-  if (series.length) {
-    const grid = h('div.grid');
-    lazyList(grid, series.slice(0, 120), (item) => seriesCard(item), { chunk: 30 });
-    resultsHost.appendChild(section('Box sets', series.length, grid, series.length > 120));
+  if (results.series.length) {
+    resultsHost.appendChild(
+      section('Box sets', results.series.length, h('div.grid', results.series.map(seriesCard)))
+    );
   }
 
   // ------------------------------------------------------------ programmes
   if (programmes.length) {
+    const ids = [...new Set(programmes.map((p) => String(p.streamId)))];
+    const channels = await store.fetchByIds('live', ids).catch(() => []);
+    const byId = new Map(channels.map((c) => [String(c.id), c]));
+
     const list = h('div.col.gap-1');
-    programmes.slice(0, LIMIT).forEach((p) => {
-      const channel = store.state.liveById.get(String(p.streamId));
+    programmes.forEach((p) => {
+      const channel = byId.get(String(p.streamId));
       list.appendChild(
-        h(
-          'button.result-row',
-          {
-            onclick: () => {
-              if (channel) playChannel(channel, store.state.liveChannels);
-            }
-          },
+        h('button.result-row',
+          { onclick: () => channel && playChannel(channel, { query: {} }) },
           h('span.result-row__time', `${relativeDay(p.s)} ${timeHM(p.s)}`),
-          h(
-            'span.result-row__body',
+          h('span.result-row__body',
             h('span.result-row__title.truncate', p.t),
-            h('span.result-row__sub.truncate', `${p.channel || (channel ? tidyChannelName(channel.name) : '')} · until ${timeHM(p.e)}`)
-          ),
-          icon('play', 15)
-        )
+            h('span.result-row__sub.truncate',
+              `${p.channel || (channel ? tidyChannelName(channel.name) : '')} · until ${timeHM(p.e)}`)),
+          icon('play', 15))
       );
     });
-    resultsHost.appendChild(section('Coming up in the guide', programmes.length, list, programmes.length > LIMIT));
+    resultsHost.appendChild(section('Coming up in the guide', programmes.length, list));
   } else if (!store.state.epg.ready) {
     resultsHost.appendChild(
-      h(
-        'p.dim',
-        { style: { fontSize: '12.5px', marginTop: '20px' } },
-        'Load the TV guide to also search programmes that are coming up.'
-      )
+      h('p.dim', { style: { fontSize: '12.5px', marginTop: '20px' } },
+        'Load the TV guide to also search programmes that are coming up.')
     );
   }
 }
 
-function section(title, count, content, truncated) {
-  return h(
-    'section.search-section',
-    h(
-      'div.search-section__head',
-      title,
-      h('span.count', String(count)),
-      truncated ? h('span.dim', { style: { letterSpacing: 0, textTransform: 'none', fontWeight: '400' } }, '· showing the closest matches') : null
-    ),
-    content
-  );
+function section(title, count, content) {
+  return h('section.search-section',
+    h('div.search-section__head', title, h('span.count', String(count))),
+    content);
 }

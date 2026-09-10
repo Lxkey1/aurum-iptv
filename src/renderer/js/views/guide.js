@@ -26,10 +26,14 @@ export async function renderGuide(host) {
   const page = h('div.page.page--flush');
   host.appendChild(page);
 
+  if (!store.state.catalogue.channels) {
+    page.appendChild(emptyState('tv', 'No channels yet', 'Download the catalogue first.'));
+    return;
+  }
   try {
-    await store.ensureLive();
+    if (!store.state.categories.live.length) await store.loadCategories('live');
   } catch (err) {
-    page.appendChild(emptyState('alert', 'Could not load channels', err.message));
+    page.appendChild(emptyState('alert', 'Could not load categories', err.message));
     return;
   }
 
@@ -99,7 +103,8 @@ function buildLoadPrompt(host) {
 // -------------------------------------------------------------- guide grid
 
 function buildGrid(page, host) {
-  const channels = store.state.liveChannels;
+  /** Filled by applyFilter() from the catalogue; never the whole line at once. */
+  let channels = [];
 
   // Window: from the top of the current hour, forward 48 hours.
   const now = Date.now();
@@ -111,19 +116,12 @@ function buildGrid(page, host) {
   let canvasWidth = totalMinutes * pxPerMin;
 
   // ----------------------------------------------------------- category
-  const counts = new Map();
-  for (const c of channels) counts.set(c._cat, (counts.get(c._cat) || 0) + 1);
-
   const categorySelect = h(
     'select.select',
     { style: { maxWidth: '240px' } },
-    h('option', { value: '__all__' }, `All channels (${channels.length})`),
+    h('option', { value: '__all__' }, `All channels (${store.state.catalogue.channels.toLocaleString()})`),
     h('option', { value: '__fav__' }, `Favourites (${store.state.favorites.live.length})`),
-    store.state.liveCategories
-      .filter((c) => (counts.get(String(c.category_id)) || 0) > 0)
-      .map((c) =>
-        h('option', { value: String(c.category_id) }, `${c.category_name} (${counts.get(String(c.category_id))})`)
-      )
+    store.state.categories.live.map((c) => h('option', { value: c.id }, `${c.name} (${c.count})`))
   );
   categorySelect.value = categoryMemo;
 
@@ -133,7 +131,7 @@ function buildGrid(page, host) {
   const matchLabel = h(
     'span.dim',
     { style: { fontSize: '12px' } },
-    `${store.state.epg.matched.toLocaleString()} of ${channels.length.toLocaleString()} channels matched`
+    `${store.state.epg.matched.toLocaleString()} of ${store.state.catalogue.channels.toLocaleString()} channels matched`
   );
 
   const zoomOut = h('button.iconbtn', { title: 'Zoom out' }, h('span', { style: { fontSize: '16px', fontWeight: '600' } }, '−'));
@@ -184,21 +182,35 @@ function buildGrid(page, host) {
   let programmeCache = new Map(); // streamId -> programmes[]
   let renderedLanes = new Map(); // index -> {lane, chanRow}
 
-  const applyFilter = () => {
+  /**
+   * The guide grid is virtualised, so it only needs the ordered channel list —
+   * a capped page of it, since drawing 50,000 lanes helps nobody.
+   */
+  const applyFilter = async () => {
     const cat = categorySelect.value;
-    const needle = searchInput.value.trim().toLowerCase();
-    let list = channels;
-
-    if (cat === '__fav__') {
-      const favs = new Set(store.state.favorites.live.map(String));
-      list = list.filter((c) => favs.has(String(c.stream_id)));
-    } else if (cat !== '__all__') {
-      list = list.filter((c) => c._cat === cat);
-    }
-    if (needle) list = list.filter((c) => String(c.name).toLowerCase().includes(needle));
-
-    visible = list;
+    const needle = searchInput.value.trim();
     categoryMemo = cat;
+
+    try {
+      if (cat === '__fav__') {
+        const rows = await store.fetchByIds('live', store.state.favorites.live);
+        channels = needle
+          ? rows.filter((c) => c.name.toLowerCase().includes(needle.toLowerCase()))
+          : rows;
+      } else {
+        const result = await store.fetchChannels({
+          category: cat === '__all__' ? null : cat,
+          search: needle || undefined,
+          limit: 400,
+          offset: 0
+        });
+        channels = result.rows;
+      }
+    } catch {
+      channels = [];
+    }
+
+    visible = channels;
     programmeCache = new Map();
     renderedLanes = new Map();
     layout();
@@ -264,8 +276,8 @@ function buildGrid(page, host) {
     const missing = needed
       .map((i) => visible[i])
       .filter(Boolean)
-      .filter((c) => !programmeCache.has(String(c.stream_id)))
-      .map((c) => String(c.stream_id));
+      .filter((c) => !programmeCache.has(String(c.id)))
+      .map((c) => String(c.id));
 
     if (missing.length) {
       try {
@@ -282,7 +294,7 @@ function buildGrid(page, host) {
       if (renderedLanes.has(i)) continue;
 
       const lane = h('div.guide__lane', { style: { top: `${i * LANE_H}px` } });
-      const programmes = programmeCache.get(String(channel.stream_id)) || [];
+      const programmes = programmeCache.get(String(channel.id)) || [];
 
       if (!programmes.length) {
         lane.appendChild(h('div.guide__empty-lane', 'No guide data for this channel'));
@@ -296,7 +308,7 @@ function buildGrid(page, host) {
         'div.guide-chan',
         {
           style: { position: 'absolute', top: `${i * LANE_H}px`, left: '0', right: '0' },
-          onclick: () => playChannel(channel, visible),
+          onclick: () => playChannel(channel, { ids: visible.map((c) => String(c.id)) }),
           title: channel.name
         },
         h('span.guide-chan__logo', logoNode(channel)),
@@ -456,7 +468,7 @@ function openProgramme(p, channel) {
           {
             onclick: () => {
               closeModal();
-              playChannel(channel, store.state.liveChannels);
+              playChannel(channel, { query: {} });
             }
           },
           icon('play', 16),

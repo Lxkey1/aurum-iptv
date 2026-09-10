@@ -1,29 +1,22 @@
-/** Movies and Series browsers — same shell, different data source. */
+/** Films and box sets — paged poster grids backed by the SQLite catalogue. */
 
 import { h, icon, clear } from '../util/dom.js';
 import { debounce } from '../util/format.js';
-import { chipBar, lazyList } from '../ui/cards.js';
-import { emptyState, spinnerBlock } from '../ui/feedback.js';
+import { chipBar } from '../ui/cards.js';
+import { emptyState, spinnerBlock, toastErr } from '../ui/feedback.js';
 import { movieCard, seriesCard } from './home.js';
 import * as store from '../state.js';
 
 const ALL = '__all__';
 const FAVS = '__fav__';
+const PAGE = 60;
 
-const SORTS = {
-  movie: [
-    { id: 'added', label: 'Recently added' },
-    { id: 'name', label: 'A – Z' },
-    { id: 'rating', label: 'Top rated' },
-    { id: 'year', label: 'Newest first' }
-  ],
-  series: [
-    { id: 'added', label: 'Recently added' },
-    { id: 'name', label: 'A – Z' },
-    { id: 'rating', label: 'Top rated' },
-    { id: 'year', label: 'Newest first' }
-  ]
-};
+const SORTS = [
+  { id: 'added', label: 'Recently added' },
+  { id: 'name', label: 'A – Z' },
+  { id: 'rating', label: 'Top rated' },
+  { id: 'year', label: 'Newest first' }
+];
 
 const viewState = {
   movie: { category: ALL, sort: 'added', filter: '' },
@@ -39,51 +32,25 @@ async function renderCatalogue(host, kind) {
   host.appendChild(page);
   page.appendChild(spinnerBlock(kind === 'movie' ? 'Loading films…' : 'Loading box sets…'));
 
-  try {
-    if (kind === 'movie') await store.ensureMovies();
-    else await store.ensureSeries();
-  } catch (err) {
-    clear(page).appendChild(
-      emptyState('alert', 'Could not load this library', err.message,
-        h('button.btn.btn--primary', { onclick: () => renderCatalogue(host, kind) }, 'Try again'))
-    );
-    return;
-  }
-
-  const items = kind === 'movie' ? store.state.movies : store.state.series;
-  const categories = kind === 'movie' ? store.state.vodCategories : store.state.seriesCategories;
-  const st = viewState[kind];
-
-  if (!items.length) {
+  const totalInDb = kind === 'movie' ? store.state.catalogue.movies : store.state.catalogue.series;
+  if (!totalInDb) {
     clear(page).appendChild(
       emptyState(kind === 'movie' ? 'film' : 'series', 'Nothing in this library',
-        'Your line did not return any titles for this section.')
+        'Your line did not return any titles for this section, or the catalogue has not been downloaded yet.')
     );
     return;
   }
 
-  const idOf = (item) => (kind === 'movie' ? item.stream_id : item.series_id);
-
-  // ------------------------------------------------------------- controls
-  const counts = new Map();
-  for (const item of items) {
-    const cat = String(item.category_id ?? '');
-    counts.set(cat, (counts.get(cat) || 0) + 1);
+  try {
+    if (!store.state.categories[kind].length) await store.loadCategories(kind);
+  } catch {
+    /* categories are optional — the grid still works */
   }
 
-  const chipItems = [
-    { id: ALL, label: 'All', count: items.length },
-    { id: FAVS, label: 'Favourites', count: (store.state.favorites[kind] || []).length },
-    ...categories
-      .map((c) => ({
-        id: String(c.category_id),
-        label: c.category_name || 'Unnamed',
-        count: counts.get(String(c.category_id)) || 0
-      }))
-      .filter((c) => c.count > 0)
-  ];
+  const st = viewState[kind];
 
   const gridHost = h('div.grid');
+  const sentinel = h('div', { style: { height: '1px' } });
   const countLabel = h('p.dim', { style: { fontSize: '13px' } }, '');
 
   const filterInput = h('input', {
@@ -95,101 +62,128 @@ async function renderCatalogue(host, kind) {
 
   const sortSelect = h(
     'select.select',
-    { onchange: (e) => { st.sort = e.target.value; paint(); } },
-    SORTS[kind].map((s) => h('option', { value: s.id, selected: s.id === st.sort }, s.label))
+    { onchange: (e) => { st.sort = e.target.value; reset(); } },
+    SORTS.map((s) => h('option', { value: s.id, selected: s.id === st.sort }, s.label))
   );
 
   const chipHost = h('div');
-  function refreshChips() {
+  const refreshChips = () => {
+    const items = [
+      { id: ALL, label: 'All', count: totalInDb },
+      { id: FAVS, label: 'Favourites', count: (store.state.favorites[kind] || []).length },
+      ...store.state.categories[kind].map((c) => ({ id: c.id, label: c.name, count: c.count }))
+    ];
     clear(chipHost).appendChild(
-      chipBar(chipItems, st.category, (id) => {
+      chipBar(items, st.category, (id) => {
         st.category = id;
         refreshChips();
-        paint();
+        reset();
       })
     );
-  }
+  };
   refreshChips();
 
   clear(page).append(
-    h(
-      'div.page__head',
-      h('div.page__title',
-        h('h1', kind === 'movie' ? 'Films' : 'Box sets'),
-        countLabel),
-      h(
-        'div.row.gap-3',
+    h('div.page__head',
+      h('div.page__title', h('h1', kind === 'movie' ? 'Films' : 'Box sets'), countLabel),
+      h('div.row.gap-3',
         h('div.live-cats__search', { style: { width: '250px', height: '38px' } }, icon('search', 14), filterInput),
-        sortSelect
-      )
-    ),
+        sortSelect)),
     chipHost,
     h('div', { style: { height: '20px' } }),
-    gridHost
+    gridHost,
+    sentinel
   );
 
-  // -------------------------------------------------------------- painting
-  function paint() {
-    let list = items;
+  // --------------------------------------------------------------- paging
+  let offset = 0;
+  let total = 0;
+  let loading = false;
+  let exhausted = false;
+  let token = 0;
 
-    if (st.category === FAVS) {
-      const favs = new Set((store.state.favorites[kind] || []).map(String));
-      list = list.filter((item) => favs.has(String(idOf(item))));
-    } else if (st.category !== ALL) {
-      list = list.filter((item) => String(item.category_id ?? '') === String(st.category));
+  const loadMore = async () => {
+    if (loading || exhausted) return;
+    loading = true;
+    const mine = token;
+    try {
+      let rows = [];
+      if (st.category === FAVS) {
+        const ids = (store.state.favorites[kind] || []).slice(offset, offset + PAGE);
+        rows = ids.length ? await store.fetchByIds(kind, ids) : [];
+        total = (store.state.favorites[kind] || []).length;
+        offset += ids.length;
+        if (!ids.length || offset >= total) exhausted = true;
+      } else {
+        const result = await store.fetchTitles(kind, {
+          category: st.category === ALL ? null : st.category,
+          search: st.filter.trim() || undefined,
+          sort: st.sort,
+          limit: PAGE,
+          offset
+        });
+        if (mine !== token) return;
+        rows = result.rows;
+        total = result.total;
+        offset += rows.length;
+        if (rows.length < PAGE) exhausted = true;
+      }
+      if (mine !== token) return;
+
+      countLabel.textContent = `${total.toLocaleString()} ${kind === 'movie' ? 'film' : 'title'}${total === 1 ? '' : 's'}`;
+
+      if (!total) {
+        gridHost.className = '';
+        clear(gridHost).appendChild(
+          emptyState('search', 'Nothing found',
+            st.filter.trim() ? `No titles match “${st.filter}”.` : 'This category is empty.')
+        );
+        return;
+      }
+
+      gridHost.className = 'grid';
+      const frag = document.createDocumentFragment();
+      for (const row of rows) frag.appendChild(kind === 'movie' ? movieCard(row) : seriesCard(row));
+      gridHost.appendChild(frag);
+    } catch (err) {
+      toastErr('Could not load titles', err.message);
+      exhausted = true;
+    } finally {
+      loading = false;
     }
+  };
 
-    const needle = st.filter.trim().toLowerCase();
-    if (needle) list = list.filter((item) => String(item.name || '').toLowerCase().includes(needle));
+  const observer = new IntersectionObserver(
+    (entries) => {
+      if (entries.some((e) => e.isIntersecting)) loadMore();
+    },
+    { root: host, rootMargin: '900px' }
+  );
+  observer.observe(sentinel);
 
-    list = sortItems(list, st.sort, kind);
-
-    countLabel.textContent = `${list.length.toLocaleString()} ${kind === 'movie' ? 'film' : 'title'}${list.length === 1 ? '' : 's'}`;
-
-    if (!list.length) {
-      clear(gridHost);
-      gridHost.className = '';
-      gridHost.appendChild(
-        emptyState('search', 'Nothing found',
-          needle ? `No titles match “${st.filter}”.` : 'This category is empty.')
-      );
-      return;
-    }
-
+  function reset() {
+    token += 1;
+    offset = 0;
+    exhausted = false;
+    total = 0;
     gridHost.className = 'grid';
-    lazyList(gridHost, list, (item) => (kind === 'movie' ? movieCard(item) : seriesCard(item)), { chunk: 40 });
+    clear(gridHost);
+    host.scrollTop = 0;
+    loadMore();
   }
 
   filterInput.addEventListener('input', debounce(() => {
     st.filter = filterInput.value;
-    paint();
-  }, 200));
+    reset();
+  }, 240));
 
-  paint();
-}
+  reset();
 
-function sortItems(list, sort, kind) {
-  const copy = [...list];
-  switch (sort) {
-    case 'name':
-      return copy.sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), undefined, { numeric: true }));
-    case 'rating':
-      return copy.sort((a, b) => (Number(b.rating) || 0) - (Number(a.rating) || 0));
-    case 'year':
-      return copy.sort((a, b) => yearOf(b, kind) - yearOf(a, kind));
-    case 'added':
-    default:
-      return copy.sort((a, b) => addedOf(b, kind) - addedOf(a, kind));
-  }
-}
-
-function yearOf(item, kind) {
-  const raw = kind === 'movie' ? item.year || item.releaseDate : item.releaseDate || item.year;
-  const n = Number(String(raw || '').slice(0, 4));
-  return Number.isFinite(n) ? n : 0;
-}
-
-function addedOf(item, kind) {
-  const raw = kind === 'movie' ? item.added : item.last_modified || item.added;
-  return Number(raw) || 0;
+  const watcher = new MutationObserver(() => {
+    if (!document.body.contains(gridHost)) {
+      observer.disconnect();
+      watcher.disconnect();
+    }
+  });
+  watcher.observe(host, { childList: true });
 }

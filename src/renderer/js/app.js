@@ -72,13 +72,14 @@ function paintNav() {
       lastSection = route.section;
     }
 
+    const cat = store.state.catalogue;
     let badge = null;
-    if (route.id === 'live' && store.state.liveChannels.length) {
-      badge = h('span.nav__badge', formatCount(store.state.liveChannels.length));
-    } else if (route.id === 'movies' && store.state.movies.length) {
-      badge = h('span.nav__badge', formatCount(store.state.movies.length));
-    } else if (route.id === 'series' && store.state.series.length) {
-      badge = h('span.nav__badge', formatCount(store.state.series.length));
+    if (route.id === 'live' && cat.channels) {
+      badge = h('span.nav__badge', formatCount(cat.channels));
+    } else if (route.id === 'movies' && cat.movies) {
+      badge = h('span.nav__badge', formatCount(cat.movies));
+    } else if (route.id === 'series' && cat.series) {
+      badge = h('span.nav__badge', formatCount(cat.series));
     } else if (route.id === 'favourites') {
       const total =
         store.state.favorites.live.length + store.state.favorites.movie.length + store.state.favorites.series.length;
@@ -196,17 +197,28 @@ async function afterLogin(account) {
   const start = store.state.settings.startPage || 'home';
   await navigate(start);
 
-  // Warm the catalogue so nav badges and search are ready.
-  setStatus('Loading catalogue…', 'busy');
-  Promise.allSettled([store.ensureLive(), store.ensureMovies(), store.ensureSeries()]).then(() => {
-    paintNav();
-    setStatus(
-      `${store.state.liveChannels.length.toLocaleString()} channels · ${store.state.movies.length.toLocaleString()} films · ${store.state.series.length.toLocaleString()} box sets`,
-      'ok',
-      6000
-    );
-    maybeAutoLoadEpg();
-  });
+  // The catalogue lives in SQLite. If it is already there this is instant;
+  // otherwise it is pulled from the provider once and indexed.
+  const already = store.state.catalogue.channels > 0;
+  setStatus(already ? 'Loading catalogue…' : 'Downloading catalogue…', 'busy');
+
+  const unsub = store.onSyncProgress((p) => setStatus(p.text || 'Working…', 'busy'));
+  store
+    .syncCatalogue(false)
+    .then((stats) => {
+      paintNav();
+      setStatus(
+        `${stats.channels.toLocaleString()} channels · ${stats.movies.toLocaleString()} films · ${stats.series.toLocaleString()} box sets`,
+        'ok',
+        6000
+      );
+      maybeAutoLoadEpg();
+    })
+    .catch((err) => {
+      setStatus('Catalogue unavailable', 'err', 8000);
+      toastErr('Could not load the catalogue', err.message);
+    })
+    .finally(() => unsub());
 }
 
 function maybeAutoLoadEpg() {
@@ -313,10 +325,19 @@ function bindChrome() {
     setStatus('Refreshing…', 'busy');
     try {
       await store.clearCache();
-      await Promise.allSettled([store.ensureLive(true), store.ensureMovies(true), store.ensureSeries(true)]);
-      paintNav();
-      await navigate(currentRoute);
-      setStatus('Catalogue refreshed', 'ok', 4000);
+      const unsubRefresh = store.onSyncProgress((p) => setStatus(p.text || 'Refreshing…', 'busy'));
+      try {
+        const stats = await store.syncCatalogue(true);
+        paintNav();
+        await navigate(currentRoute);
+        setStatus(
+          `Refreshed · ${stats.channels.toLocaleString()} channels · ${stats.movies.toLocaleString()} films`,
+          'ok',
+          5000
+        );
+      } finally {
+        unsubRefresh();
+      }
     } catch (err) {
       setStatus('Refresh failed', 'err', 5000);
       toastErr('Refresh failed', err.message);

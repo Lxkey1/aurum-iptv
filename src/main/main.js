@@ -7,12 +7,14 @@ const { Store } = require('./store');
 const { XtreamClient, XtreamError, parseServerInput } = require('./xtream');
 const { EpgManager } = require('./epg');
 const { DiskCache } = require('./cache');
+const { CatalogueDb } = require('./catalogue-db');
 
 const isDev = process.argv.includes('--dev');
 
 let store;
 let epg;
 let cache;
+let catalogue;
 let mainWindow = null;
 let client = null;
 let powerBlockerId = null;
@@ -153,6 +155,7 @@ function createWindow() {
 app.whenReady().then(() => {
   store = new Store();
   cache = new DiskCache();
+  catalogue = new CatalogueDb().open();
   epg = new EpgManager();
 
   if (!store.settings.hwAccel) app.disableHardwareAcceleration();
@@ -177,6 +180,7 @@ app.on('window-all-closed', () => {
   if (powerBlockerId !== null) powerSaveBlocker.stop(powerBlockerId);
   if (epg) epg.cancel();
   if (store) store.save(true);
+  if (catalogue) catalogue.close();
   app.quit();
 });
 
@@ -278,38 +282,127 @@ function registerIpc() {
     client = null;
     store.clearProfile();
     cache.clear();
+    catalogue.ingest({});          // empties the catalogue, keeps user overrides
+    catalogue.resetChannelPrefs(); // signing out should forget those too
     epg.clear();
     return true;
   });
 
-  // ---- catalogue
-  handle('xtream:liveCategories', () =>
-    cached('cat:live', 60 * MIN, () => ensureClient().liveCategories())
-  );
-  handle('xtream:vodCategories', () =>
-    cached('cat:vod', 60 * MIN, () => ensureClient().vodCategories())
-  );
-  handle('xtream:seriesCategories', () =>
-    cached('cat:series', 60 * MIN, () => ensureClient().seriesCategories())
-  );
+  // ---- catalogue (SQLite-backed)
 
-  handle('xtream:liveStreams', ({ categoryId } = {}) =>
-    cached(`live:${categoryId || 'all'}`, 30 * MIN, () => ensureClient().liveStreams(categoryId))
-  );
-  handle('xtream:vodStreams', ({ categoryId } = {}) =>
-    cached(`vod:${categoryId || 'all'}`, 30 * MIN, () => ensureClient().vodStreams(categoryId))
-  );
-  handle('xtream:series', ({ categoryId } = {}) =>
-    cached(`series:${categoryId || 'all'}`, 30 * MIN, () => ensureClient().seriesList(categoryId))
-  );
+  /**
+   * Pull the full catalogue from the provider and ingest it into SQLite.
+   * The provider only serves these as three enormous documents, so there is no
+   * way to page the fetch itself - but it happens once, and everything the UI
+   * asks for afterwards is an indexed query.
+   */
+  handle('catalogue:sync', async ({ force = false } = {}) => {
+    const c = ensureClient();
+    if (!force && catalogue.isPopulated) return { ...catalogue.stats(), skipped: true };
 
-  handle('xtream:seriesInfo', ({ seriesId }) =>
-    cached(`seriesinfo:${seriesId}`, 120 * MIN, () => ensureClient().seriesInfo(seriesId))
-  );
-  handle('xtream:vodInfo', ({ vodId }) =>
-    cached(`vodinfo:${vodId}`, 120 * MIN, () => ensureClient().vodInfo(vodId))
-  );
-  handle('xtream:shortEpg', ({ streamId, limit }) => ensureClient().shortEpg(streamId, limit || 8));
+    const send = (text, pct) => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('catalogue:progress', { text, pct });
+      }
+    };
+
+    send('Fetching channels…', 5);
+    const [liveCategories, channels] = await Promise.all([
+      c.liveCategories().catch(() => []),
+      c.liveStreams()
+    ]);
+
+    send('Fetching films…', 35);
+    const [vodCategories, movies] = await Promise.all([
+      c.vodCategories().catch(() => []),
+      c.vodStreams().catch(() => [])
+    ]);
+
+    send('Fetching box sets…', 65);
+    const [seriesCategories, series] = await Promise.all([
+      c.seriesCategories().catch(() => []),
+      c.seriesList().catch(() => [])
+    ]);
+
+    send('Indexing…', 85);
+    const stats = catalogue.ingest({
+      channels: channels || [],
+      movies: movies || [],
+      series: series || [],
+      liveCategories,
+      vodCategories,
+      seriesCategories
+    });
+
+    // Re-align the guide with the freshly ingested channel list.
+    if (epg.index) epg.buildChannelMap(catalogue.epgMappingRows());
+
+    send('Ready', 100);
+    return stats;
+  });
+
+  handle('catalogue:stats', async () => catalogue.stats());
+  handle('catalogue:categories', async ({ kind }) => catalogue.categories(kind));
+
+  handle('catalogue:channels', async (opts = {}) => ({
+    rows: catalogue.channels(opts),
+    total: catalogue.channelCount(opts)
+  }));
+
+  handle('catalogue:channelIds', async (opts = {}) => catalogue.channelIds(opts));
+
+  handle('catalogue:titles', async ({ kind, ...opts } = {}) => ({
+    rows: catalogue.titles(kind, opts),
+    total: catalogue.titleCount(kind, opts)
+  }));
+
+  handle('catalogue:byIds', async ({ kind, ids }) => catalogue.byIds(kind, ids || []));
+  handle('catalogue:one', async ({ kind, id }) => catalogue.one(kind, id));
+  handle('catalogue:search', async ({ term, limit }) => catalogue.search(term, { limit: limit || 60 }));
+  handle('catalogue:archiveChannels', async ({ limit } = {}) => catalogue.archiveChannels(limit || 500));
+
+  // ---- channel management
+  handle('channels:setHidden', async ({ ids, hidden }) => catalogue.setHidden(ids || [], hidden));
+  handle('channels:setOrder', async ({ ids }) => {
+    catalogue.setOrder(ids || []);
+    return true;
+  });
+  handle('channels:rename', async ({ id, name }) => {
+    catalogue.renameChannel(id, name);
+    return true;
+  });
+  handle('channels:setNumber', async ({ id, num }) => {
+    catalogue.setCustomNumber(id, num);
+    return true;
+  });
+  handle('channels:resetPrefs', async () => {
+    catalogue.resetChannelPrefs();
+    return true;
+  });
+
+  // ---- custom groups
+  handle('groups:list', async () => catalogue.groups());
+  handle('groups:create', async ({ name }) => catalogue.createGroup(name));
+  handle('groups:rename', async ({ id, name }) => {
+    catalogue.renameGroup(id, name);
+    return true;
+  });
+  handle('groups:delete', async ({ id }) => {
+    catalogue.deleteGroup(id);
+    return true;
+  });
+  handle('groups:setChannels', async ({ id, ids }) => {
+    catalogue.setGroupChannels(id, ids || []);
+    return true;
+  });
+  handle('groups:add', async ({ id, ids }) => {
+    catalogue.addToGroup(id, ids || []);
+    return true;
+  });
+  handle('groups:remove', async ({ id, ids }) => {
+    catalogue.removeFromGroup(id, ids || []);
+    return true;
+  });
 
   handle('xtream:streamUrl', ({ type, id, ext }) => {
     const c = ensureClient();
@@ -350,11 +443,10 @@ function registerIpc() {
     return true;
   });
 
-  handle('epg:mapChannels', async ({ channels }) => ({
-    matched: epg.buildChannelMap(channels),
-    total: (channels || []).length,
-    ready: Boolean(epg.index)
-  }));
+  handle('epg:mapChannels', async () => {
+    const rows = catalogue.epgMappingRows();
+    return { matched: epg.buildChannelMap(rows), total: rows.length, ready: Boolean(epg.index) };
+  });
 
   handle('epg:query', async ({ streamIds, from, to }) => epg.query(streamIds || [], from, to));
   handle('epg:nowNext', async ({ streamIds, at }) => epg.nowNextBulk(streamIds || [], at || Date.now()));
@@ -368,6 +460,7 @@ function registerIpc() {
     recentChannels: store.data.recentChannels,
     epg: epg.status,
     cache: cache.stats(),
+    catalogue: catalogue.stats(),
     appVersion: app.getVersion()
   }));
 

@@ -30,8 +30,9 @@ class Player {
     this.el = {};
     this.engine = null;
     this.media = null; // { type, id, title, subtitle, cover, live, url, progressKey, ... }
-    this.playlist = []; // live channels for zapping
+    this.playlist = []; // live channel ids for zapping
     this.playlistIndex = -1;
+    this.zapRows = new Map();
     this.idleTimer = null;
     this.zapTimer = null;
     this.osdTimer = null;
@@ -496,9 +497,23 @@ class Player {
 
   // ----------------------------------------------------------------- zapping
 
-  setPlaylist(channels, currentId) {
-    this.playlist = channels || [];
-    this.playlistIndex = this.playlist.findIndex((c) => String(c.stream_id) === String(currentId));
+  /**
+   * The zap list is held as ids only. A category on a large line can hold tens
+   * of thousands of channels, so rows are fetched a page at a time on demand.
+   */
+  setPlaylist(ids, currentId) {
+    this.playlist = (ids || []).map(String);
+    this.playlistIndex = this.playlist.indexOf(String(currentId));
+    this.zapRows = new Map();
+  }
+
+  async channelAt(index) {
+    const id = this.playlist[index];
+    if (!id) return null;
+    if (this.zapRows.has(id)) return this.zapRows.get(id);
+    const row = await store.fetchOne('live', id);
+    if (row) this.zapRows.set(id, row);
+    return row;
   }
 
   async zapBy(delta) {
@@ -508,17 +523,17 @@ class Player {
   }
 
   async zapTo(index) {
-    const channel = this.playlist[index];
+    const channel = await this.channelAt(index);
     if (!channel) return;
     this.playlistIndex = index;
 
     this.saveProgress(true);
     this.media = {
       type: 'live',
-      id: channel.stream_id,
+      id: channel.id,
       title: tidyChannelName(channel.name),
       subtitle: '',
-      cover: channel.stream_icon,
+      cover: channel.logo,
       live: true,
       ext: store.state.settings.liveFormat || 'ts',
       url: ''
@@ -530,15 +545,15 @@ class Player {
     this.updateFavouriteIcon();
     this.showZapOsd(channel);
     this.renderZapList();
-    store.pushRecentChannel(channel.stream_id).catch(() => {});
+    store.pushRecentChannel(channel.id).catch(() => {});
     await this.loadCurrent();
     this.loadNowPlayingEpg(channel);
   }
 
   async loadNowPlayingEpg(channel) {
     try {
-      const map = await store.epgNowNext([String(channel.stream_id)]);
-      const entry = map[String(channel.stream_id)];
+      const map = await store.epgNowNext([String(channel.id)]);
+      const entry = map[String(channel.id)];
       if (entry && entry.now) {
         const text = `${entry.now.t} · ${timeHM(entry.now.s)} – ${timeHM(entry.now.e)}`;
         this.el.subtitle.textContent = text;
@@ -550,7 +565,7 @@ class Player {
       /* fall through to the short EPG endpoint */
     }
     try {
-      const short = await store.getShortEpg(channel.stream_id, 1);
+      const short = await store.getShortEpg(channel.id, 1);
       const item = short && short.epg_listings && short.epg_listings[0];
       if (item) {
         const title = decodeMaybeBase64(item.title);
@@ -568,8 +583,8 @@ class Player {
     $('#zapNow').textContent = '';
     const logo = $('#zapLogo');
     clear(logo);
-    if (channel.stream_icon) {
-      const img = h('img', { src: channel.stream_icon, alt: '', referrerPolicy: 'no-referrer' });
+    if (channel.logo) {
+      const img = h('img', { src: channel.logo, alt: '', referrerPolicy: 'no-referrer' });
       img.addEventListener('error', () => img.remove());
       logo.appendChild(img);
     }
@@ -583,21 +598,38 @@ class Player {
     if (open) this.renderZapList();
   }
 
-  renderZapList() {
+  /** Renders a window around the current channel, not the whole playlist. */
+  async renderZapList() {
     const body = this.el.zapListBody;
     clear(body);
     if (!this.playlist.length) {
       body.appendChild(h('p.dim', { style: { padding: '20px', fontSize: '13px' } }, 'No channel list loaded.'));
       return;
     }
-    this.playlist.forEach((channel, index) => {
+
+    const centre = Math.max(0, this.playlistIndex);
+    const from = Math.max(0, centre - 40);
+    const to = Math.min(this.playlist.length, centre + 60);
+    const slice = this.playlist.slice(from, to);
+
+    const rows = await store.fetchByIds('live', slice);
+    for (const row of rows) this.zapRows.set(String(row.id), row);
+
+    if (this.playlist.length > slice.length) {
+      body.appendChild(
+        h('p.dim', { style: { padding: '10px 14px', fontSize: '11.5px' } },
+          `Showing ${slice.length} of ${this.playlist.length.toLocaleString()} channels`)
+      );
+    }
+
+    slice.forEach((id, offset) => {
+      const index = from + offset;
+      const channel = this.zapRows.get(String(id));
+      if (!channel) return;
       const active = index === this.playlistIndex;
       const row = h(
         'button.chan',
-        {
-          onclick: () => this.zapTo(index),
-          class: active ? 'playing' : ''
-        },
+        { onclick: () => this.zapTo(index), class: active ? 'playing' : '' },
         h('span.chan__num', String(channel.num || index + 1)),
         h('span.chan__logo', channelLogo(channel)),
         h('span.chan__body', h('span.chan__name.truncate', tidyChannelName(channel.name)))
@@ -1070,8 +1102,8 @@ class Player {
 const READY_STATES = ['nothing', 'metadata', 'current', 'future', 'enough'];
 
 function channelLogo(channel) {
-  if (channel.stream_icon) {
-    const img = h('img', { src: channel.stream_icon, alt: '', referrerPolicy: 'no-referrer' });
+  if (channel.logo) {
+    const img = h('img', { src: channel.logo, alt: '', referrerPolicy: 'no-referrer' });
     img.addEventListener('error', () => {
       img.replaceWith(h('span', initials(channel.name)));
     });

@@ -1,8 +1,14 @@
-/** Live TV: category rail on the left, channel list with now/next on the right. */
+/**
+ * Live TV — category rail on the left, paged channel list on the right.
+ *
+ * Nothing is held in the renderer: categories and channel pages are queried
+ * from the SQLite catalogue as the user scrolls, so a 50,000-channel line
+ * behaves the same as a 50-channel one.
+ */
 
-import { h, icon, clear, $ } from '../util/dom.js';
-import { debounce, tidyChannelName } from '../util/format.js';
-import { channelRow, lazyList } from '../ui/cards.js';
+import { h, icon, clear } from '../util/dom.js';
+import { debounce } from '../util/format.js';
+import { channelRow } from '../ui/cards.js';
 import { emptyState, spinnerBlock, toastErr } from '../ui/feedback.js';
 import { playChannel } from '../playback.js';
 import * as store from '../state.js';
@@ -10,8 +16,10 @@ import * as store from '../state.js';
 const ALL = '__all__';
 const FAVS = '__fav__';
 const RECENT = '__recent__';
+const PAGE = 100;
 
 let lastCategory = ALL;
+let lastGroupId = null;
 let lastFilter = '';
 
 export async function renderLive(host) {
@@ -20,75 +28,64 @@ export async function renderLive(host) {
   host.appendChild(page);
   page.appendChild(spinnerBlock('Loading channels…'));
 
-  try {
-    await store.ensureLive();
-  } catch (err) {
+  if (!store.state.catalogue.channels) {
     clear(page).appendChild(
-      emptyState('alert', 'Could not load channels', err.message,
-        h('button.btn.btn--primary', { onclick: () => renderLive(host) }, 'Try again'))
+      emptyState('tv', 'No channels yet', 'Your catalogue has not been downloaded. Use Refresh in the toolbar.',
+        h('button.btn.btn--primary', { onclick: () => store.syncCatalogue(true).then(() => renderLive(host)) }, 'Download now'))
     );
     return;
   }
 
-  const channels = store.state.liveChannels;
-  if (!channels.length) {
-    clear(page).appendChild(emptyState('tv', 'No live channels', 'This line did not return any live streams.'));
+  try {
+    if (!store.state.categories.live.length) await store.loadCategories('live');
+    if (!store.state.groups.length) await store.loadGroups();
+  } catch (err) {
+    clear(page).appendChild(emptyState('alert', 'Could not load categories', err.message));
     return;
   }
 
-  // -------------------------------------------------------------- layout
+  // ---------------------------------------------------------------- layout
   const catList = h('div.live-cats__list.thin-scroll');
   const catSearch = h('input', { type: 'text', placeholder: 'Filter categories…', spellcheck: false });
 
   const listScroll = h('div.live-list__scroll');
   const listBody = h('div.col.gap-1');
-  listScroll.appendChild(listBody);
+  const sentinel = h('div', { style: { height: '1px' } });
+  listScroll.append(listBody, sentinel);
 
   const countLabel = h('span.dim', { style: { fontSize: '12.5px' } }, '');
   const titleLabel = h('h2', { style: { fontSize: '17px' } }, 'All channels');
-  const search = h('input', {
-    type: 'text',
-    placeholder: 'Filter these channels…',
-    spellcheck: false,
-    value: lastFilter
-  });
-
+  const search = h('input', { type: 'text', placeholder: 'Filter these channels…', spellcheck: false, value: lastFilter });
   const epgHint = h('span.badge', '');
+
+  const manageBtn = h(
+    'button.btn.btn--sm',
+    { onclick: () => import('./manage.js').then((m) => m.openChannelManager(() => renderLive(host))) },
+    icon('sliders', 14),
+    'Manage'
+  );
 
   const layout = h(
     'div.live-layout',
-    h(
-      'aside.live-cats',
+    h('aside.live-cats',
       h('div.live-cats__head', h('div.live-cats__search', icon('search', 14), catSearch)),
-      catList
-    ),
-    h(
-      'section.live-list',
-      h(
-        'div.live-list__head',
+      catList),
+    h('section.live-list',
+      h('div.live-list__head',
         h('div.col.gap-1', titleLabel, countLabel),
-        h(
-          'div.row.gap-3',
-          epgHint,
-          h('div.live-cats__search', { style: { width: '240px' } }, icon('search', 14), search)
-        )
-      ),
-      listScroll
-    )
+        h('div.row.gap-3', epgHint, manageBtn,
+          h('div.live-cats__search', { style: { width: '230px' } }, icon('search', 14), search))),
+      listScroll)
   );
-
   clear(page).appendChild(layout);
 
-  // ----------------------------------------------------------- categories
-  const counts = new Map();
-  for (const c of channels) counts.set(c._cat, (counts.get(c._cat) || 0) + 1);
-
+  // ------------------------------------------------------------ categories
   const buildCategories = (filter) => {
     const needle = filter.trim().toLowerCase();
     clear(catList);
 
     const specials = [
-      { id: ALL, name: 'All channels', count: channels.length, iconName: 'tv' },
+      { id: ALL, name: 'All channels', count: store.state.catalogue.channels, iconName: 'tv' },
       { id: FAVS, name: 'Favourites', count: store.state.favorites.live.length, iconName: 'heart' },
       { id: RECENT, name: 'Recently watched', count: store.state.recentChannels.length, iconName: 'history' }
     ];
@@ -96,123 +93,185 @@ export async function renderLive(host) {
     for (const s of specials) {
       if (needle && !s.name.toLowerCase().includes(needle)) continue;
       catList.appendChild(
-        h(
-          'button.cat-item',
-          { class: lastCategory === s.id ? 'active' : '', onclick: () => selectCategory(s.id, s.name) },
+        h('button.cat-item',
+          { class: lastCategory === s.id && lastGroupId == null ? 'active' : '', onclick: () => select(s.id, s.name) },
           icon(s.iconName, 15),
           h('span.cat-item__name', s.name),
-          h('span.cat-item__count', String(s.count))
-        )
+          h('span.cat-item__count', String(s.count)))
       );
     }
 
-    catList.appendChild(h('div', { style: { height: '10px' } }));
+    if (store.state.groups.length) {
+      catList.appendChild(h('div.nav__section', { style: { padding: '14px 12px 6px' } }, 'My groups'));
+      for (const g of store.state.groups) {
+        if (needle && !g.name.toLowerCase().includes(needle)) continue;
+        catList.appendChild(
+          h('button.cat-item',
+            { class: lastGroupId === g.id ? 'active' : '', onclick: () => selectGroup(g) },
+            icon('list', 15),
+            h('span.cat-item__name', g.name),
+            h('span.cat-item__count', String(g.count)))
+        );
+      }
+    }
 
-    for (const cat of store.state.liveCategories) {
-      const id = String(cat.category_id);
-      const name = cat.category_name || 'Unnamed';
-      if (needle && !name.toLowerCase().includes(needle)) continue;
+    catList.appendChild(h('div.nav__section', { style: { padding: '14px 12px 6px' } }, 'Provider categories'));
+    for (const cat of store.state.categories.live) {
+      if (needle && !cat.name.toLowerCase().includes(needle)) continue;
       catList.appendChild(
-        h(
-          'button.cat-item',
-          { class: lastCategory === id ? 'active' : '', onclick: () => selectCategory(id, name) },
-          h('span.cat-item__name', name),
-          h('span.cat-item__count', String(counts.get(id) || 0))
-        )
+        h('button.cat-item',
+          { class: lastCategory === cat.id && lastGroupId == null ? 'active' : '', onclick: () => select(cat.id, cat.name) },
+          h('span.cat-item__name', cat.name),
+          h('span.cat-item__count', String(cat.count)))
       );
     }
   };
 
   catSearch.addEventListener('input', debounce(() => buildCategories(catSearch.value), 160));
 
-  // ------------------------------------------------------------- rendering
-  let currentList = [];
-  let epgMap = {};
+  // --------------------------------------------------------------- paging
+  let offset = 0;
+  let total = 0;
+  let loading = false;
+  let exhausted = false;
+  let token = 0;
 
-  const resolveList = (categoryId) => {
-    if (categoryId === FAVS) {
-      return store.state.favorites.live.map((id) => store.state.liveById.get(String(id))).filter(Boolean);
-    }
-    if (categoryId === RECENT) {
-      return store.state.recentChannels.map((id) => store.state.liveById.get(String(id))).filter(Boolean);
-    }
-    if (categoryId === ALL) return channels;
-    return channels.filter((c) => c._cat === String(categoryId));
+  const queryFor = () => {
+    const q = {};
+    if (lastGroupId != null) q.groupId = lastGroupId;
+    else if (lastCategory !== ALL && lastCategory !== FAVS && lastCategory !== RECENT) q.category = lastCategory;
+    if (search.value.trim()) q.search = search.value.trim();
+    return q;
   };
 
-  const paint = () => {
-    const needle = search.value.trim().toLowerCase();
-    const filtered = needle
-      ? currentList.filter((c) => String(c.name).toLowerCase().includes(needle))
-      : currentList;
+  /** Favourites and recents are explicit id lists, not a category filter. */
+  const pinnedIds = () =>
+    lastCategory === FAVS ? store.state.favorites.live
+      : lastCategory === RECENT ? store.state.recentChannels
+        : null;
 
-    countLabel.textContent = `${filtered.length.toLocaleString()} channel${filtered.length === 1 ? '' : 's'}`;
-
-    if (!filtered.length) {
-      clear(listBody).appendChild(
-        emptyState('search', 'No channels here', needle ? `Nothing matches “${search.value}”.` : 'This category is empty.')
-      );
-      return;
+  const appendRows = async (rows) => {
+    if (!rows.length) return;
+    const ids = rows.map((r) => String(r.id));
+    let epgMap = {};
+    if (store.state.epg.ready) {
+      try {
+        epgMap = await store.epgNowNext(ids);
+      } catch {
+        /* guide is optional */
+      }
     }
-
-    lazyList(
-      listBody,
-      filtered,
-      (channel, i) =>
+    const frag = document.createDocumentFragment();
+    rows.forEach((channel, i) => {
+      frag.appendChild(
         channelRow(channel, {
-          epg: epgMap[String(channel.stream_id)],
-          index: i,
-          onPlay: () => playChannel(channel, filtered)
-        }),
-      { chunk: 50, scrollHost: listScroll }
-    );
+          epg: epgMap[String(channel.id)],
+          index: offset + i,
+          onPlay: () => playChannel(channel, { query: queryFor(), ids: pinnedIds() })
+        })
+      );
+    });
+    listBody.appendChild(frag);
   };
 
-  const loadEpg = async (list) => {
-    if (!store.state.epg.ready) {
-      epgHint.textContent = 'Guide not loaded';
-      epgHint.title = 'Load the TV guide from the Guide page or Settings to see now/next here.';
-      return;
-    }
-    epgHint.textContent = 'Guide active';
+  const loadMore = async () => {
+    if (loading || exhausted) return;
+    loading = true;
+    const mine = token;
     try {
-      epgMap = await store.epgNowNext(list.slice(0, 900).map((c) => String(c.stream_id)));
-      paint();
-    } catch {
-      epgMap = {};
+      const pinned = pinnedIds();
+      if (pinned) {
+        const slice = pinned.slice(offset, offset + PAGE);
+        if (!slice.length) {
+          exhausted = true;
+        } else {
+          const rows = await store.fetchByIds('live', slice);
+          if (mine !== token) return;
+          const needle = search.value.trim().toLowerCase();
+          await appendRows(needle ? rows.filter((r) => r.name.toLowerCase().includes(needle)) : rows);
+          offset += slice.length;
+          if (offset >= pinned.length) exhausted = true;
+        }
+        total = pinned.length;
+      } else {
+        const result = await store.fetchChannels({ ...queryFor(), limit: PAGE, offset });
+        if (mine !== token) return;
+        total = result.total;
+        await appendRows(result.rows);
+        offset += result.rows.length;
+        if (result.rows.length < PAGE) exhausted = true;
+      }
+      countLabel.textContent = `${total.toLocaleString()} channel${total === 1 ? '' : 's'}`;
+      if (!total) {
+        clear(listBody).appendChild(
+          emptyState('search', 'No channels here',
+            search.value.trim() ? `Nothing matches “${search.value}”.` : 'This category is empty.')
+        );
+      }
+    } catch (err) {
+      toastErr('Could not load channels', err.message);
+      exhausted = true;
+    } finally {
+      loading = false;
     }
   };
 
-  const selectCategory = (id, name) => {
-    lastCategory = id;
-    titleLabel.textContent = name;
-    currentList = resolveList(id);
-    buildCategories(catSearch.value);
+  const observer = new IntersectionObserver(
+    (entries) => {
+      if (entries.some((e) => e.isIntersecting)) loadMore();
+    },
+    { root: listScroll, rootMargin: '800px' }
+  );
+  observer.observe(sentinel);
+
+  const reset = () => {
+    token += 1;
+    offset = 0;
+    exhausted = false;
+    total = 0;
+    clear(listBody);
     listScroll.scrollTop = 0;
-    epgMap = {};
-    paint();
-    loadEpg(currentList);
+    epgHint.textContent = store.state.epg.ready ? 'Guide active' : 'Guide not loaded';
+    loadMore();
+  };
+
+  const select = (id, name) => {
+    lastCategory = id;
+    lastGroupId = null;
+    titleLabel.textContent = name;
+    buildCategories(catSearch.value);
+    reset();
+  };
+
+  const selectGroup = (g) => {
+    lastGroupId = g.id;
+    lastCategory = ALL;
+    titleLabel.textContent = g.name;
+    buildCategories(catSearch.value);
+    reset();
   };
 
   search.addEventListener('input', debounce(() => {
     lastFilter = search.value;
-    paint();
-  }, 180));
+    reset();
+  }, 220));
 
   buildCategories('');
   const initialName =
-    lastCategory === ALL ? 'All channels'
-      : lastCategory === FAVS ? 'Favourites'
-        : lastCategory === RECENT ? 'Recently watched'
-          : (store.state.liveCategories.find((c) => String(c.category_id) === lastCategory) || {}).category_name || 'All channels';
-  selectCategory(lastCategory, initialName);
+    lastGroupId != null ? (store.state.groups.find((g) => g.id === lastGroupId) || {}).name || 'Group'
+      : lastCategory === ALL ? 'All channels'
+        : lastCategory === FAVS ? 'Favourites'
+          : lastCategory === RECENT ? 'Recently watched'
+            : (store.state.categories.live.find((c) => c.id === lastCategory) || {}).name || 'All channels';
+  titleLabel.textContent = initialName;
+  reset();
 
-  // Keep now/next fresh while the page is open.
-  const ticker = setInterval(() => {
+  // stop observing once the view is replaced
+  const watcher = new MutationObserver(() => {
     if (!document.body.contains(layout)) {
-      clearInterval(ticker);
-      return;
+      observer.disconnect();
+      watcher.disconnect();
     }
-    loadEpg(currentList);
-  }, 120000);
+  });
+  watcher.observe(host, { childList: true });
 }

@@ -9,21 +9,22 @@ import * as store from '../state.js';
 // ------------------------------------------------------------------ movie
 
 export async function openMovieDetail(movie) {
+  const movieId = movie.id || movie.stream_id;
   const body = openModal(spinnerBlock('Loading title…'));
 
   let info = null;
   try {
-    info = await store.getVodInfo(movie.stream_id);
+    info = await store.getVodInfo(movieId);
   } catch {
     /* many panels do not implement get_vod_info — fall back to list data */
   }
 
   const meta = (info && info.info) || {};
   const data = (info && info.movie_data) || {};
-  const cover = meta.movie_image || movie.stream_icon || movie.cover;
+  const cover = meta.movie_image || movie.cover || movie.stream_icon;
   const backdrop = (Array.isArray(meta.backdrop_path) && meta.backdrop_path[0]) || cover;
   const name = data.name || movie.name || meta.name || 'Untitled';
-  const key = progressKey('movie', movie.stream_id);
+  const key = progressKey('movie', movieId);
   const saved = store.getProgress(key);
 
   const chips = [];
@@ -32,15 +33,15 @@ export async function openMovieDetail(movie) {
   if (meta.duration) chips.push(meta.duration);
   else if (meta.episode_run_time) chips.push(runtime(meta.episode_run_time));
   if (meta.rating) chips.push(`★ ${meta.rating}`);
-  if (data.container_extension) chips.push(String(data.container_extension).toUpperCase());
+  if (data.container_extension || movie.ext) chips.push(String(data.container_extension || movie.ext).toUpperCase());
 
-  const fav = store.isFavorite('movie', movie.stream_id);
+  const fav = store.isFavorite('movie', movieId);
   const favBtn = h(
     'button.btn',
     {
       class: fav ? 'btn--primary' : '',
       onclick: async () => {
-        const added = await store.toggleFavorite('movie', movie.stream_id);
+        const added = await store.toggleFavorite('movie', movieId);
         favBtn.classList.toggle('btn--primary', added);
         clear(favBtn).append(icon('heart', 16), added ? 'In favourites' : 'Favourite');
       }
@@ -52,7 +53,7 @@ export async function openMovieDetail(movie) {
   const start = (fromStart) => {
     closeModal();
     playMovie(
-      { ...movie, name, container_extension: data.container_extension || movie.container_extension },
+      { ...movie, id: movieId, name, ext: data.container_extension || movie.ext },
       fromStart ? null : info
     ).then(() => {
       if (fromStart) store.removeProgress(key).catch(() => {});
@@ -119,11 +120,12 @@ export async function openMovieDetail(movie) {
 // ----------------------------------------------------------------- series
 
 export async function openSeriesDetail(series) {
+  const seriesId = series.id || series.series_id;
   const body = openModal(spinnerBlock('Loading box set…'));
 
   let info = null;
   try {
-    info = await store.getSeriesInfo(series.series_id);
+    info = await store.getSeriesInfo(seriesId);
   } catch (err) {
     clear(body).append(
       h('div', { style: { padding: '40px' } },
@@ -145,19 +147,19 @@ export async function openSeriesDetail(series) {
   const totalEpisodes = seasonKeys.reduce((sum, k) => sum + (episodesBySeason[k] || []).length, 0);
 
   const chips = [];
-  const year = String(firstOf(meta, ['releaseDate', 'releasedate'], series.releaseDate || '')).slice(0, 4);
+  const year = String(firstOf(meta, ['releaseDate', 'releasedate'], series.year || '')).slice(0, 4);
   if (year) chips.push(year);
   if (seasonKeys.length) chips.push(`${seasonKeys.length} season${seasonKeys.length > 1 ? 's' : ''}`);
   if (totalEpisodes) chips.push(`${totalEpisodes} episodes`);
   if (meta.rating) chips.push(`★ ${meta.rating}`);
 
-  const fav = store.isFavorite('series', series.series_id);
+  const fav = store.isFavorite('series', seriesId);
   const favBtn = h(
     'button.btn',
     {
       class: fav ? 'btn--primary' : '',
       onclick: async () => {
-        const added = await store.toggleFavorite('series', series.series_id);
+        const added = await store.toggleFavorite('series', seriesId);
         favBtn.classList.toggle('btn--primary', added);
         clear(favBtn).append(icon('heart', 16), added ? 'In favourites' : 'Favourite');
       }
@@ -166,7 +168,7 @@ export async function openSeriesDetail(series) {
     fav ? 'In favourites' : 'Favourite'
   );
 
-  const seriesRef = { name, series_id: series.series_id, cover };
+  const seriesRef = { name, id: seriesId, cover };
 
   // Pick up where the viewer left off, otherwise the first episode.
   const nextUp = findNextUp(episodesBySeason, seasonKeys);

@@ -66,7 +66,7 @@ export function posterCard(opts) {
 
 /** A live channel row with now/next info. */
 export function channelRow(channel, { epg, playing, onPlay, index } = {}) {
-  const fav = store.isFavorite('live', channel.stream_id);
+  const fav = store.isFavorite('live', channel.id);
 
   const favBtn = h(
     'button.iconbtn',
@@ -75,7 +75,7 @@ export function channelRow(channel, { epg, playing, onPlay, index } = {}) {
       title: fav ? 'Remove from favourites' : 'Add to favourites',
       onclick: async (e) => {
         e.stopPropagation();
-        const added = await store.toggleFavorite('live', channel.stream_id);
+        const added = await store.toggleFavorite('live', channel.id);
         favBtn.classList.toggle('on', added);
       }
     },
@@ -123,7 +123,7 @@ export function channelRow(channel, { epg, playing, onPlay, index } = {}) {
 }
 
 export function logoNode(channel) {
-  const src = channel.stream_icon || channel.cover;
+  const src = channel.logo || channel.cover;
   if (src) {
     const img = h('img', { src, alt: '', referrerPolicy: 'no-referrer', loading: 'lazy' });
     img.addEventListener('error', () => img.replaceWith(h('span', initials(channel.name))));

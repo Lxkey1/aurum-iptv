@@ -5,21 +5,28 @@ import { toastErr } from './ui/feedback.js';
 import { tidyChannelName, progressKey, firstOf } from './util/format.js';
 import * as store from './state.js';
 
-/** Play a live channel, wiring up the zap list so Page Up/Down works. */
-export async function playChannel(channel, playlist) {
+/**
+ * Play a live channel.
+ *
+ * `context` describes where the user was browsing so the player can zap through
+ * the same list. Only ids are held — a category can run to tens of thousands of
+ * channels and the rows are fetched a page at a time as the user zaps.
+ */
+export async function playChannel(channel, context = {}) {
   try {
-    const list = playlist && playlist.length ? playlist : store.state.liveChannels;
     player.init();
-    player.setPlaylist(list, channel.stream_id);
+    const ids = context.ids || (await store.fetchChannelIds(context.query || {}));
+    player.setPlaylist(ids, channel.id);
 
     await player.play({
       type: 'live',
-      id: channel.stream_id,
+      id: channel.id,
       title: tidyChannelName(channel.name),
       subtitle: '',
-      cover: channel.stream_icon,
+      cover: channel.logo,
       live: true,
-      ext: store.state.settings.liveFormat || 'ts'
+      ext: store.state.settings.liveFormat || 'ts',
+      archive: Boolean(channel.archive)
     });
 
     player.renderZapList();
@@ -33,14 +40,14 @@ export async function playChannel(channel, playlist) {
 export async function playMovie(movie, info) {
   try {
     const ext = firstOf(
-      { a: movie.container_extension, b: info && info.movie_data && info.movie_data.container_extension },
+      { a: movie.ext || movie.container_extension, b: info && info.movie_data && info.movie_data.container_extension },
       ['a', 'b'],
       'mp4'
     );
-    const id = movie.stream_id || (info && info.movie_data && info.movie_data.stream_id);
+    const id = movie.id || movie.stream_id || (info && info.movie_data && info.movie_data.stream_id);
     const key = progressKey('movie', id);
     const saved = store.getProgress(key);
-    const cover = movie.stream_icon || movie.cover || (info && info.info && info.info.movie_image);
+    const cover = movie.cover || movie.stream_icon || (info && info.info && info.info.movie_image);
 
     player.init();
     player.setPlaylist([], null);
@@ -84,7 +91,7 @@ export async function playEpisode(episode, ctx = {}) {
       type: 'episode',
       streamType: 'series',
       id: episode.id,
-      seriesId: series.series_id,
+      seriesId: series.id || series.series_id,
       title,
       subtitle: label,
       cover: info.movie_image || series.cover,
@@ -111,7 +118,7 @@ export async function playEpisode(episode, ctx = {}) {
 /** Resume a continue-watching entry. */
 export async function resumeEntry(entry) {
   if (entry.type === 'movie') {
-    await playMovie({ stream_id: entry.id, name: entry.name, stream_icon: entry.cover, container_extension: entry.ext });
+    await playMovie({ id: entry.id, name: entry.name, cover: entry.cover, ext: entry.ext });
     return;
   }
   if (entry.type === 'episode') {
@@ -124,7 +131,7 @@ export async function resumeEntry(entry) {
         episode_num: entry.meta && entry.meta.episode,
         info: { movie_image: entry.cover }
       },
-      { series: { name: entry.name, series_id: entry.seriesId, cover: entry.cover } }
+      { series: { name: entry.name, id: entry.seriesId, cover: entry.cover } }
     );
   }
 }

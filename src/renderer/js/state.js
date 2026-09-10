@@ -30,19 +30,36 @@ export const state = {
   recentChannels: [],
   appVersion: '',
 
-  // catalogue caches (renderer side, cheap to rebuild)
-  liveCategories: [],
-  vodCategories: [],
-  seriesCategories: [],
-  liveChannels: [], // full list, always loaded — needed for search, guide and zapping
-  liveById: new Map(),
-  movies: [],
-  series: [],
+  /**
+   * The catalogue itself lives in SQLite in the main process — a real line runs
+   * to a quarter of a million items, far too much to hold here. Only counts and
+   * a small row cache live in the renderer.
+   */
+  catalogue: { channels: 0, movies: 0, series: 0, hidden: 0, groups: 0, updatedAt: 0, sizeBytes: 0 },
+  categories: { live: [], movie: [], series: [] },
+  groups: [],
+
+  /** Recently fetched rows, so repeated renders do not re-query. */
+  rowCache: new Map(),
 
   epg: { ready: false, loading: false, stats: null, matched: 0 },
 
-  loaded: { live: false, movies: false, series: false }
+  syncing: false
 };
+
+const ROW_CACHE_MAX = 3000;
+
+function cacheRows(kind, rows) {
+  for (const row of rows || []) state.rowCache.set(kind + ':' + row.id, row);
+  while (state.rowCache.size > ROW_CACHE_MAX) {
+    state.rowCache.delete(state.rowCache.keys().next().value);
+  }
+  return rows;
+}
+
+export function cachedRow(kind, id) {
+  return state.rowCache.get(kind + ':' + id) || null;
+}
 
 // ------------------------------------------------------------ pub/sub
 
@@ -78,6 +95,7 @@ export async function loadPersistedState() {
   state.epg.ready = data.epg.ready;
   state.epg.loading = data.epg.loading;
   state.epg.stats = data.epg.stats;
+  if (data.catalogue) state.catalogue = data.catalogue;
   applyTheme();
   return data;
 }
@@ -120,82 +138,181 @@ export async function logout() {
 }
 
 function resetCatalogue() {
-  state.liveCategories = [];
-  state.vodCategories = [];
-  state.seriesCategories = [];
-  state.liveChannels = [];
-  state.liveById = new Map();
-  state.movies = [];
-  state.series = [];
-  state.loaded = { live: false, movies: false, series: false };
+  state.catalogue = { channels: 0, movies: 0, series: 0, hidden: 0, groups: 0, updatedAt: 0, sizeBytes: 0 };
+  state.categories = { live: [], movie: [], series: [] };
+  state.groups = [];
+  state.rowCache.clear();
 }
 
 // ------------------------------------------------------------- catalogue
 
-const asArray = (value) => (Array.isArray(value) ? value : []);
+// ---------------------------------------------------------------- catalogue
 
-/** Live channels are always fetched in full: search, guide and zapping need them. */
-export async function ensureLive(force = false) {
-  if (state.loaded.live && !force) return state.liveChannels;
-
-  const [cats, streams] = await Promise.all([
-    call(api.xtream.liveCategories()),
-    call(api.xtream.liveStreams())
-  ]);
-
-  state.liveCategories = asArray(cats);
-  state.liveChannels = asArray(streams).map((s, i) => ({
-    ...s,
-    stream_id: s.stream_id,
-    _n: Number(s.num) || i + 1,
-    _cat: String(s.category_id ?? '')
-  }));
-  state.liveById = new Map(state.liveChannels.map((c) => [String(c.stream_id), c]));
-  state.loaded.live = true;
-
-  // Tell the main process how to line channels up with the XMLTV index.
+/**
+ * Fetch the whole catalogue from the provider and ingest it into SQLite.
+ * Only needed on first sign-in or an explicit refresh; everything afterwards is
+ * a query against the local index.
+ */
+export async function syncCatalogue(force = false) {
+  if (state.syncing) return state.catalogue;
+  state.syncing = true;
+  emit('sync', { active: true });
   try {
-    const mapped = await call(api.epg.mapChannels(
-      state.liveChannels.map((c) => ({
-        stream_id: c.stream_id,
-        epg_channel_id: c.epg_channel_id,
-        name: c.name
-      }))
-    ));
-    state.epg.matched = mapped.matched;
-    state.epg.ready = mapped.ready;
-  } catch {
-    /* the guide is optional */
+    const stats = await call(api.catalogue.sync(force));
+    state.catalogue = stats;
+    state.rowCache.clear();
+    await Promise.all([
+      loadCategories('live'),
+      loadCategories('movie'),
+      loadCategories('series'),
+      loadGroups()
+    ]);
+    try {
+      const mapped = await call(api.epg.mapChannels());
+      state.epg.matched = mapped.matched;
+      state.epg.ready = mapped.ready;
+    } catch {
+      /* the guide is optional */
+    }
+    emit('catalogue', state.catalogue);
+    return stats;
+  } finally {
+    state.syncing = false;
+    emit('sync', { active: false });
   }
-
-  emit('live', state.liveChannels);
-  return state.liveChannels;
 }
 
-export async function ensureMovies(force = false) {
-  if (state.loaded.movies && !force) return state.movies;
-  const [cats, streams] = await Promise.all([
-    call(api.xtream.vodCategories()),
-    call(api.xtream.vodStreams())
-  ]);
-  state.vodCategories = asArray(cats);
-  state.movies = asArray(streams);
-  state.loaded.movies = true;
-  emit('movies', state.movies);
-  return state.movies;
+export const onSyncProgress = (fn) => api.catalogue.onProgress(fn);
+
+export async function refreshStats() {
+  state.catalogue = await call(api.catalogue.stats());
+  return state.catalogue;
 }
 
-export async function ensureSeries(force = false) {
-  if (state.loaded.series && !force) return state.series;
-  const [cats, list] = await Promise.all([
-    call(api.xtream.seriesCategories()),
-    call(api.xtream.series())
-  ]);
-  state.seriesCategories = asArray(cats);
-  state.series = asArray(list);
-  state.loaded.series = true;
-  emit('series', state.series);
-  return state.series;
+export async function loadCategories(kind) {
+  const rows = await call(api.catalogue.categories(kind));
+  state.categories[kind] = rows;
+  return rows;
+}
+
+export async function loadGroups() {
+  state.groups = await call(api.groups.list());
+  return state.groups;
+}
+
+/** A page of channels. Resolves to { rows, total }. */
+export async function fetchChannels(opts = {}) {
+  const result = await call(api.catalogue.channels(opts));
+  cacheRows('live', result.rows);
+  return result;
+}
+
+/** Every visible channel id in display order — the player's zap list. */
+export const fetchChannelIds = (opts = {}) => call(api.catalogue.channelIds(opts));
+
+/** A page of films or box sets. Resolves to { rows, total }. */
+export async function fetchTitles(kind, opts = {}) {
+  const result = await call(api.catalogue.titles(kind, opts));
+  cacheRows(kind, result.rows);
+  return result;
+}
+
+export async function fetchByIds(kind, ids) {
+  if (!ids || !ids.length) return [];
+  const rows = await call(api.catalogue.byIds(kind, ids.map(String)));
+  return cacheRows(kind, rows);
+}
+
+export async function fetchOne(kind, id) {
+  const hit = cachedRow(kind, id);
+  if (hit) return hit;
+  const row = await call(api.catalogue.one(kind, id));
+  if (row) cacheRows(kind, [row]);
+  return row;
+}
+
+export async function searchCatalogue(term, limit = 60) {
+  const result = await call(api.catalogue.search(term, limit));
+  cacheRows('live', result.live);
+  cacheRows('movie', result.movie);
+  cacheRows('series', result.series);
+  return result;
+}
+
+export const fetchArchiveChannels = (limit) => call(api.catalogue.archiveChannels(limit));
+
+// ------------------------------------------------------- channel management
+
+export async function setChannelsHidden(ids, hidden) {
+  const hiddenCount = await call(api.channels.setHidden(ids.map(String), hidden));
+  state.catalogue.hidden = hiddenCount;
+  state.rowCache.clear();
+  emit('channels', state.catalogue);
+  return hiddenCount;
+}
+
+export async function setChannelOrder(ids) {
+  await call(api.channels.setOrder(ids.map(String)));
+  state.rowCache.clear();
+  emit('channels', state.catalogue);
+}
+
+export async function renameChannel(id, name) {
+  await call(api.channels.rename(String(id), name));
+  state.rowCache.delete('live:' + id);
+  emit('channels', state.catalogue);
+}
+
+export async function setChannelNumber(id, num) {
+  await call(api.channels.setNumber(String(id), num));
+  state.rowCache.delete('live:' + id);
+  emit('channels', state.catalogue);
+}
+
+export async function resetChannelPrefs() {
+  await call(api.channels.resetPrefs());
+  state.rowCache.clear();
+  await loadCategories('live');
+  emit('channels', state.catalogue);
+}
+
+// ------------------------------------------------------------------ groups
+
+export async function createGroup(name) {
+  const id = await call(api.groups.create(name));
+  await loadGroups();
+  emit('groups', state.groups);
+  return id;
+}
+
+export async function renameGroup(id, name) {
+  await call(api.groups.rename(id, name));
+  await loadGroups();
+  emit('groups', state.groups);
+}
+
+export async function deleteGroup(id) {
+  await call(api.groups.remove(id));
+  await loadGroups();
+  emit('groups', state.groups);
+}
+
+export async function addToGroup(id, ids) {
+  await call(api.groups.add(id, ids.map(String)));
+  await loadGroups();
+  emit('groups', state.groups);
+}
+
+export async function removeFromGroup(id, ids) {
+  await call(api.groups.removeChannels(id, ids.map(String)));
+  await loadGroups();
+  emit('groups', state.groups);
+}
+
+export async function setGroupChannels(id, ids) {
+  await call(api.groups.setChannels(id, ids.map(String)));
+  await loadGroups();
+  emit('groups', state.groups);
 }
 
 export const getSeriesInfo = (id) => call(api.xtream.seriesInfo(id));
@@ -219,16 +336,8 @@ export async function refreshEpg(force = false) {
     if (result && result.ok) {
       state.epg.ready = true;
       state.epg.stats = result.stats;
-      if (state.liveChannels.length) {
-        const mapped = await call(api.epg.mapChannels(
-          state.liveChannels.map((c) => ({
-            stream_id: c.stream_id,
-            epg_channel_id: c.epg_channel_id,
-            name: c.name
-          }))
-        ));
-        state.epg.matched = mapped.matched;
-      }
+      const mapped = await call(api.epg.mapChannels());
+      state.epg.matched = mapped.matched;
     }
     return result;
   } finally {

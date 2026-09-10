@@ -341,13 +341,9 @@ function maintenanceCard(host, navigate) {
             btn.disabled = true;
             try {
               await store.clearCache();
-              await Promise.allSettled([
-                store.ensureLive(true),
-                store.ensureMovies(true),
-                store.ensureSeries(true)
-              ]);
+              const stats = await store.syncCatalogue(true);
               toastOk('Catalogue refreshed',
-                `${store.state.liveChannels.length.toLocaleString()} channels · ${store.state.movies.length.toLocaleString()} films · ${store.state.series.length.toLocaleString()} box sets`);
+                `${stats.channels.toLocaleString()} channels · ${stats.movies.toLocaleString()} films · ${stats.series.toLocaleString()} box sets`);
             } catch (err) {
               toastErr('Refresh failed', err.message);
             } finally {
