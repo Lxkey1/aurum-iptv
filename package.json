@@ -25,7 +25,9 @@
     "files": [
       "src/**/*",
       "assets/**/*",
-      "package.json"
+      "package.json",
+      "!src/renderer/dev${/*}",
+      "!src/renderer/dev-preview.html"
     ],
     "win": {
       "target": [
