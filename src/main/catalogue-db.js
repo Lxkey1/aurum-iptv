@@ -139,6 +139,18 @@ class CatalogueDb {
 
       CREATE INDEX IF NOT EXISTS ix_group_member ON channel_group_member(group_id, ord);
       CREATE INDEX IF NOT EXISTS ix_pref_hidden  ON channel_pref(hidden);
+
+      -- TMDB enrichment, cached so a title is looked up at most once.
+      -- 'miss' records a search that found nothing, so it is not retried forever.
+      CREATE TABLE IF NOT EXISTS metadata (
+        kind      TEXT NOT NULL,
+        item_id   TEXT NOT NULL,
+        tmdb_id   INTEGER,
+        payload   TEXT,
+        miss      INTEGER NOT NULL DEFAULT 0,
+        fetched_at INTEGER NOT NULL,
+        PRIMARY KEY (kind, item_id)
+      );
     `);
 
     this.db.exec(
@@ -207,6 +219,8 @@ class CatalogueDb {
 
     db.exec('BEGIN IMMEDIATE');
     try {
+      // metadata and user overrides are deliberately untouched: both are keyed
+      // by provider id and must survive a catalogue refresh.
       db.exec('DELETE FROM channel; DELETE FROM movie; DELETE FROM series; DELETE FROM category; DELETE FROM search_fts;');
 
       const cat = db.prepare('INSERT OR REPLACE INTO category(kind,id,name,ord) VALUES(?,?,?,?)');
@@ -289,20 +303,24 @@ class CatalogueDb {
 
   // --------------------------------------------------------------- queries
 
-  /** Category list with live counts, honouring hidden channels. */
+  /**
+   * Category list with counts.
+   *
+   * The hidden filter must sit in WHERE, not in the LEFT JOIN's ON clause — a
+   * left join keeps the row with a NULL pref, so filtering there would still
+   * count hidden channels and the sidebar would promise more than it shows.
+   */
   categories(kind) {
     const table = kind === 'live' ? 'channel' : kind === 'movie' ? 'movie' : 'series';
-    const hiddenJoin =
-      kind === 'live'
-        ? 'LEFT JOIN channel_pref p ON p.id = t.id WHERE COALESCE(p.hidden,0) = 0'
-        : '';
+    const live = kind === 'live';
     const rows = this.db
       .prepare(
         `SELECT c.id, c.name, COUNT(t.id) AS count
            FROM category c
            LEFT JOIN ${table} t ON t.cat = c.id
-           ${hiddenJoin ? hiddenJoin.replace('WHERE', 'AND') : ''}
+           ${live ? 'LEFT JOIN channel_pref p ON p.id = t.id' : ''}
           WHERE c.kind = ?
+            ${live ? 'AND (t.id IS NULL OR COALESCE(p.hidden,0) = 0)' : ''}
           GROUP BY c.id, c.name
           ORDER BY c.ord`
       )
@@ -493,6 +511,56 @@ class CatalogueDb {
   /** Every channel's id + epg id + name — used once to build the EPG map. */
   epgMappingRows() {
     return this.db.prepare('SELECT id AS stream_id, epg_id AS epg_channel_id, name FROM channel').all();
+  }
+
+  // ------------------------------------------------------------ enrichment
+
+  /**
+   * Cached TMDB lookup for one title.
+   * @returns the metadata, `{miss:true}` when TMDB had nothing, or null.
+   */
+  metadata(kind, itemId) {
+    const row = this.db
+      .prepare('SELECT payload, miss, fetched_at FROM metadata WHERE kind = ? AND item_id = ?')
+      .get(kind, String(itemId));
+    if (!row) return null;
+    if (row.miss) return { miss: true, fetchedAt: row.fetched_at };
+    try {
+      return JSON.parse(row.payload);
+    } catch {
+      return null;
+    }
+  }
+
+  /** Passing null records a miss, so a title TMDB does not know is not retried forever. */
+  saveMetadata(kind, itemId, payload) {
+    this.db
+      .prepare(
+        `INSERT INTO metadata(kind, item_id, tmdb_id, payload, miss, fetched_at)
+         VALUES(?,?,?,?,?,?)
+         ON CONFLICT(kind, item_id) DO UPDATE SET
+           tmdb_id = excluded.tmdb_id, payload = excluded.payload,
+           miss = excluded.miss, fetched_at = excluded.fetched_at`
+      )
+      .run(
+        kind,
+        String(itemId),
+        payload ? payload.tmdbId : null,
+        payload ? JSON.stringify(payload) : null,
+        payload ? 0 : 1,
+        Date.now()
+      );
+  }
+
+  metadataStats() {
+    return {
+      enriched: this.db.prepare('SELECT COUNT(*) n FROM metadata WHERE miss = 0').get().n,
+      notFound: this.db.prepare('SELECT COUNT(*) n FROM metadata WHERE miss = 1').get().n
+    };
+  }
+
+  clearMetadata() {
+    this.db.exec('DELETE FROM metadata');
   }
 
   // ----------------------------------------------------- channel management

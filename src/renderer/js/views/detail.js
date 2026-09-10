@@ -12,28 +12,32 @@ export async function openMovieDetail(movie) {
   const movieId = movie.id || movie.stream_id;
   const body = openModal(spinnerBlock('Loading title…'));
 
-  let info = null;
-  try {
-    info = await store.getVodInfo(movieId);
-  } catch {
-    /* many panels do not implement get_vod_info — fall back to list data */
-  }
+  // The provider payload and TMDB are fetched together; TMDB wins wherever it
+  // has something, because provider VOD metadata is usually a title and little else.
+  const [info, tmdb] = await Promise.all([
+    store.getVodInfo(movieId).catch(() => null),
+    store.tmdbEnrich('movie', movieId, movie.name, movie.year)
+  ]);
 
   const meta = (info && info.info) || {};
   const data = (info && info.movie_data) || {};
-  const cover = meta.movie_image || movie.cover || movie.stream_icon;
-  const backdrop = (Array.isArray(meta.backdrop_path) && meta.backdrop_path[0]) || cover;
-  const name = data.name || movie.name || meta.name || 'Untitled';
+  const cover = (tmdb && tmdb.poster) || meta.movie_image || movie.cover || movie.stream_icon;
+  const backdrop =
+    (tmdb && tmdb.backdrop) || (Array.isArray(meta.backdrop_path) && meta.backdrop_path[0]) || cover;
+  const name = (tmdb && tmdb.title) || data.name || movie.name || meta.name || 'Untitled';
   const key = progressKey('movie', movieId);
   const saved = store.getProgress(key);
 
   const chips = [];
-  const year = String(firstOf(meta, ['releasedate', 'releaseDate'], movie.year || '')).slice(0, 4);
+  const year = (tmdb && tmdb.year) || String(firstOf(meta, ['releasedate', 'releaseDate'], movie.year || '')).slice(0, 4);
   if (year) chips.push(year);
-  if (meta.duration) chips.push(meta.duration);
-  else if (meta.episode_run_time) chips.push(runtime(meta.episode_run_time));
-  if (meta.rating) chips.push(`★ ${meta.rating}`);
+  if (tmdb && tmdb.certification) chips.push(tmdb.certification);
+  if (tmdb && tmdb.runtime) chips.push(runtime(tmdb.runtime));
+  else if (meta.duration) chips.push(meta.duration);
+  const rating = (tmdb && tmdb.rating) || Number(meta.rating) || movie.rating;
+  if (rating > 0) chips.push(`★ ${Number(rating).toFixed(1)}`);
   if (data.container_extension || movie.ext) chips.push(String(data.container_extension || movie.ext).toUpperCase());
+  if (tmdb) chips.push('TMDB');
 
   const fav = store.isFavorite('movie', movieId);
   const favBtn = h(
@@ -72,21 +76,26 @@ export async function openMovieDetail(movie) {
     actions.push(h('button.btn.btn--lg', { onclick: () => start(true) }, icon('refresh', 16), 'Start over'));
   }
   actions.push(favBtn);
-  if (meta.youtube_trailer) {
+  const trailerKey = (tmdb && tmdb.trailerKey) || meta.youtube_trailer;
+  if (trailerKey) {
     actions.push(
       h(
         'button.btn.btn--lg',
-        { onclick: () => window.aurum.app.openExternal(`https://www.youtube.com/watch?v=${meta.youtube_trailer}`) },
+        { onclick: () => window.aurum.app.openExternal(`https://www.youtube.com/watch?v=${trailerKey}`) },
         icon('play', 16),
         'Trailer'
       )
     );
   }
 
+  const director = (tmdb && tmdb.director && tmdb.director.join(', ')) || meta.director;
+  const cast = (tmdb && tmdb.cast && tmdb.cast.join(', ')) || meta.cast || meta.actors;
+  const genre = (tmdb && tmdb.genres && tmdb.genres.join(', ')) || meta.genre || movie.genre;
+
   const crew = [];
-  if (meta.director) crew.push(h('div', h('span', 'Director  '), plainText(meta.director)));
-  if (meta.cast || meta.actors) crew.push(h('div.clamp-2', h('span', 'Cast  '), plainText(meta.cast || meta.actors)));
-  if (meta.genre) crew.push(h('div', h('span', 'Genre  '), plainText(meta.genre)));
+  if (director) crew.push(h('div', h('span', 'Director  '), plainText(director)));
+  if (cast) crew.push(h('div.clamp-2', h('span', 'Cast  '), plainText(cast)));
+  if (genre) crew.push(h('div', h('span', 'Genre  '), plainText(genre)));
 
   clear(body).append(
     h(
@@ -98,9 +107,14 @@ export async function openMovieDetail(movie) {
         'div.detail__info',
         h('h1.detail__title', name),
         h('div.detail__meta', joinDots(chips)),
-        meta.plot || meta.description
-          ? h('p.detail__plot.thin-scroll', plainText(meta.plot || meta.description))
-          : h('p.detail__plot.dim', 'No synopsis was supplied for this title.'),
+        (() => {
+          const synopsis = (tmdb && tmdb.overview) || meta.plot || meta.description || movie.plot;
+          return synopsis
+            ? h('p.detail__plot.thin-scroll',
+                tmdb && tmdb.tagline ? h('em', { style: { color: 'var(--accent)', display: 'block', marginBottom: '8px' } }, tmdb.tagline) : null,
+                plainText(synopsis))
+            : h('p.detail__plot.dim', 'No synopsis was supplied for this title.');
+        })(),
         crew.length ? h('div.detail__crew', crew) : null,
         h('div.detail__actions', actions)
       )
@@ -124,6 +138,7 @@ export async function openSeriesDetail(series) {
   const body = openModal(spinnerBlock('Loading box set…'));
 
   let info = null;
+  const tmdbPromise = store.tmdbEnrich('series', seriesId, series.name, series.year);
   try {
     info = await store.getSeriesInfo(seriesId);
   } catch (err) {
@@ -135,10 +150,12 @@ export async function openSeriesDetail(series) {
     return;
   }
 
+  const tmdb = await tmdbPromise;
   const meta = (info && info.info) || {};
-  const cover = meta.cover || series.cover;
-  const backdrop = (Array.isArray(meta.backdrop_path) && meta.backdrop_path[0]) || cover;
-  const name = meta.name || series.name || 'Series';
+  const cover = (tmdb && tmdb.poster) || meta.cover || series.cover;
+  const backdrop =
+    (tmdb && tmdb.backdrop) || (Array.isArray(meta.backdrop_path) && meta.backdrop_path[0]) || cover;
+  const name = (tmdb && tmdb.title) || meta.name || series.name || 'Series';
 
   // `episodes` is an object keyed by season number.
   const episodesBySeason = (info && info.episodes) || {};
@@ -147,11 +164,14 @@ export async function openSeriesDetail(series) {
   const totalEpisodes = seasonKeys.reduce((sum, k) => sum + (episodesBySeason[k] || []).length, 0);
 
   const chips = [];
-  const year = String(firstOf(meta, ['releaseDate', 'releasedate'], series.year || '')).slice(0, 4);
+  const year = (tmdb && tmdb.year) || String(firstOf(meta, ['releaseDate', 'releasedate'], series.year || '')).slice(0, 4);
   if (year) chips.push(year);
+  if (tmdb && tmdb.certification) chips.push(tmdb.certification);
   if (seasonKeys.length) chips.push(`${seasonKeys.length} season${seasonKeys.length > 1 ? 's' : ''}`);
   if (totalEpisodes) chips.push(`${totalEpisodes} episodes`);
-  if (meta.rating) chips.push(`★ ${meta.rating}`);
+  const seriesRating = (tmdb && tmdb.rating) || Number(meta.rating) || series.rating;
+  if (seriesRating > 0) chips.push(`★ ${Number(seriesRating).toFixed(1)}`);
+  if (tmdb) chips.push('TMDB');
 
   const fav = store.isFavorite('series', seriesId);
   const favBtn = h(
@@ -198,9 +218,12 @@ export async function openSeriesDetail(series) {
   ].filter(Boolean);
 
   const crew = [];
-  if (meta.director) crew.push(h('div', h('span', 'Director  '), plainText(meta.director)));
-  if (meta.cast) crew.push(h('div.clamp-2', h('span', 'Cast  '), plainText(meta.cast)));
-  if (meta.genre) crew.push(h('div', h('span', 'Genre  '), plainText(meta.genre)));
+  const sDirector = (tmdb && tmdb.director && tmdb.director.join(', ')) || meta.director;
+  const sCast = (tmdb && tmdb.cast && tmdb.cast.join(', ')) || meta.cast;
+  const sGenre = (tmdb && tmdb.genres && tmdb.genres.join(', ')) || meta.genre || series.genre;
+  if (sDirector) crew.push(h('div', h('span', 'Created by  '), plainText(sDirector)));
+  if (sCast) crew.push(h('div.clamp-2', h('span', 'Cast  '), plainText(sCast)));
+  if (sGenre) crew.push(h('div', h('span', 'Genre  '), plainText(sGenre)));
 
   const episodeHost = h('div.col.gap-1');
   const tabs = h('div.season-tabs');
@@ -241,9 +264,14 @@ export async function openSeriesDetail(series) {
         'div.detail__info',
         h('h1.detail__title', name),
         h('div.detail__meta', joinDots(chips)),
-        meta.plot
-          ? h('p.detail__plot.thin-scroll', plainText(meta.plot))
-          : h('p.detail__plot.dim', 'No synopsis was supplied for this series.'),
+        (() => {
+          const synopsis = (tmdb && tmdb.overview) || meta.plot || series.plot;
+          return synopsis
+            ? h('p.detail__plot.thin-scroll',
+                tmdb && tmdb.tagline ? h('em', { style: { color: 'var(--accent)', display: 'block', marginBottom: '8px' } }, tmdb.tagline) : null,
+                plainText(synopsis))
+            : h('p.detail__plot.dim', 'No synopsis was supplied for this series.');
+        })(),
         crew.length ? h('div.detail__crew', crew) : null,
         h('div.detail__actions', actions)
       )

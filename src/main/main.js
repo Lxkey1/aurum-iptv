@@ -8,6 +8,7 @@ const { XtreamClient, XtreamError, parseServerInput } = require('./xtream');
 const { EpgManager } = require('./epg');
 const { DiskCache } = require('./cache');
 const { CatalogueDb } = require('./catalogue-db');
+const { TmdbClient } = require('./tmdb');
 
 const isDev = process.argv.includes('--dev');
 
@@ -15,6 +16,7 @@ let store;
 let epg;
 let cache;
 let catalogue;
+let tmdb;
 let mainWindow = null;
 let client = null;
 let powerBlockerId = null;
@@ -156,6 +158,7 @@ app.whenReady().then(() => {
   store = new Store();
   cache = new DiskCache();
   catalogue = new CatalogueDb().open();
+  tmdb = new TmdbClient(store.settings.tmdbKey || '', store.settings.tmdbLanguage || 'en-GB');
   epg = new EpgManager();
 
   if (!store.settings.hwAccel) app.disableHardwareAcceleration();
@@ -494,6 +497,44 @@ function registerIpc() {
   handle('store:clearCache', async () => {
     cache.clear();
     return true;
+  });
+
+  // ---- TMDB enrichment
+  handle('tmdb:status', async () => ({
+    enabled: tmdb.enabled,
+    language: tmdb.language,
+    ...catalogue.metadataStats()
+  }));
+
+  handle('tmdb:setKey', async ({ key, language }) => {
+    tmdb.apiKey = (key || '').trim();
+    tmdb.language = language || tmdb.language;
+    store.patchSettings({ tmdbKey: tmdb.apiKey, tmdbLanguage: tmdb.language });
+    if (!tmdb.enabled) return { enabled: false };
+    const ok = await tmdb.verifyKey();
+    return { enabled: ok };
+  });
+
+  /**
+   * Enrich one title, cached. `kind` is our own 'movie' | 'series'; TMDB calls
+   * the latter 'tv'.
+   */
+  handle('tmdb:enrich', async ({ kind, id, title, year, force }) => {
+    const cached = force ? null : catalogue.metadata(kind, id);
+    if (cached && !cached.miss) return cached;
+    // Do not hammer TMDB for a title it has already failed to find; retry only
+    // after a week, in case the entry has since been created.
+    if (cached && cached.miss && Date.now() - cached.fetchedAt < 7 * 86400000) return null;
+    if (!tmdb.enabled) return null;
+
+    const payload = await tmdb.enrich(kind === 'series' ? 'tv' : 'movie', title, year).catch(() => null);
+    catalogue.saveMetadata(kind, id, payload);
+    return payload;
+  });
+
+  handle('tmdb:clear', async () => {
+    catalogue.clearMetadata();
+    return catalogue.metadataStats();
   });
 
   handle('app:showError', async ({ title, message }) => {

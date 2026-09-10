@@ -25,7 +25,10 @@ const DEFAULTS = {
     fitMode: 'contain',
     reduceMotion: false,
     startPage: 'home',
-    catchupEnabled: true
+    catchupEnabled: true,
+    tmdbKey: '',
+    tmdbLanguage: 'en-GB',
+    tmdbAuto: true
   },
   favorites: { live: [], movie: [], series: [] },
   continueWatching: {}, // key -> { type, id, name, cover, position, duration, updatedAt, meta }

@@ -36,6 +36,7 @@ export async function renderSettings(host, { navigate, onLogout }) {
   grid.append(
     accountCard(onLogout),
     playbackCard(),
+    metadataCard(),
     guideCard(),
     appearanceCard(),
     maintenanceCard(host, navigate),
@@ -172,6 +173,86 @@ function playbackCard() {
       'Reduce motion',
       'Disables transitions and the home-screen carousel animation.',
       toggle(s.reduceMotion, (value) => store.updateSettings({ reduceMotion: value }))
+    )
+  );
+}
+
+// --------------------------------------------------------------- metadata
+
+/**
+ * TMDB enrichment. Titles are looked up on demand when a detail sheet opens —
+ * batch-enriching a six-figure library would be an enormous number of calls for
+ * titles nobody opens — and cached permanently once found.
+ */
+function metadataCard() {
+  const statusLine = h('p.dim', { style: { fontSize: '12px', marginTop: '8px' } }, 'Checking…');
+
+  const keyInput = h('input', {
+    type: 'password',
+    placeholder: 'Paste your TMDB API key',
+    spellcheck: false,
+    style: {
+      flex: '1', minWidth: '0', height: '38px', padding: '0 12px', borderRadius: '8px',
+      background: 'var(--bg-void)', border: '1px solid var(--glass-border)',
+      fontSize: '13px', color: 'var(--text)'
+    }
+  });
+
+  const refresh = async () => {
+    try {
+      const s = await store.tmdbStatus();
+      statusLine.textContent = s.enabled
+        ? `Connected · ${s.enriched.toLocaleString()} titles enriched, ${s.notFound.toLocaleString()} not found on TMDB`
+        : 'Not connected — films and box sets fall back to whatever your provider supplies.';
+      statusLine.style.color = s.enabled ? 'var(--good)' : 'var(--text-3)';
+    } catch (err) {
+      statusLine.textContent = err.message;
+    }
+  };
+  refresh();
+
+  const saveBtn = h(
+    'button.btn.btn--sm.btn--primary',
+    {
+      onclick: async () => {
+        saveBtn.disabled = true;
+        try {
+          const result = await store.tmdbSetKey(keyInput.value.trim());
+          if (result.enabled) toastOk('TMDB connected', 'Films and box sets will now be enriched as you open them.');
+          else toastErr('Not connected', 'That key was rejected, or the field was empty.');
+          await refresh();
+        } catch (err) {
+          toastErr('Could not verify the key', err.message);
+        } finally {
+          saveBtn.disabled = false;
+        }
+      }
+    },
+    icon('check', 14),
+    'Save key'
+  );
+
+  return h(
+    'div.card',
+    h('div.card__title', icon('star'), 'Artwork & metadata'),
+    h('p.muted', { style: { fontSize: '13px', lineHeight: '1.65' } },
+      'Provider metadata for films and box sets is usually just a title and a small poster. Connect a free TMDB key and Aurum fills in proper backdrops, synopses, cast, runtime, certification and trailers.'),
+    h('div.row.gap-3', { style: { marginTop: '16px' } }, keyInput, saveBtn),
+    h('p.dim', { style: { fontSize: '11.5px', marginTop: '8px', lineHeight: '1.55' } },
+      'Get a key free at themoviedb.org → Settings → API. Aurum only ever sends the title and year of a film you open — never your line details.'),
+    statusLine,
+    setting(
+      'Forget enriched data',
+      'Clears every cached lookup. Titles are enriched again the next time you open them.',
+      h('button.btn.btn--sm.btn--danger',
+        {
+          onclick: async () => {
+            await store.tmdbClear();
+            toast('Metadata cleared');
+            refresh();
+          }
+        },
+        icon('trash', 14), 'Clear')
     )
   );
 }

@@ -464,7 +464,9 @@ class Player {
   async toggleFavourite() {
     const media = this.media;
     if (!media) return;
-    const kind = media.type === 'live' ? 'live' : media.type === 'movie' ? 'movie' : 'series';
+    const kind = media.type === 'live' || media.type === 'catchup'
+      ? 'live'
+      : media.type === 'movie' ? 'movie' : 'series';
     const id = media.type === 'episode' ? media.seriesId : media.id;
     if (!id) return;
     const added = await store.toggleFavorite(kind, id);
@@ -475,7 +477,9 @@ class Player {
   updateFavouriteIcon() {
     const media = this.media;
     if (!media) return;
-    const kind = media.type === 'live' ? 'live' : media.type === 'movie' ? 'movie' : 'series';
+    const kind = media.type === 'live' || media.type === 'catchup'
+      ? 'live'
+      : media.type === 'movie' ? 'movie' : 'series';
     const id = media.type === 'episode' ? media.seriesId : media.id;
     this.el.btnFavourite.classList.toggle('on', store.isFavorite(kind, id));
   }

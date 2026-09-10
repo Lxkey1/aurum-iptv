@@ -2,7 +2,7 @@
 
 import { player } from './player/player.js';
 import { toastErr } from './ui/feedback.js';
-import { tidyChannelName, progressKey, firstOf } from './util/format.js';
+import { tidyChannelName, progressKey, firstOf, catchupStamp } from './util/format.js';
 import * as store from './state.js';
 
 /**
@@ -33,6 +33,39 @@ export async function playChannel(channel, context = {}) {
     player.loadNowPlayingEpg(channel);
   } catch (err) {
     toastErr('Could not start the channel', err.message);
+  }
+}
+
+/**
+ * Play a past programme from a channel's archive.
+ *
+ * Xtream exposes this as timeshift.php with a start stamp and a duration. Only
+ * channels whose `archive` flag is set actually keep one — the guide checks that
+ * before offering this.
+ */
+export async function playCatchup(channel, programme) {
+  try {
+    const minutes = Math.max(1, Math.round((programme.e - programme.s) / 60000));
+    const url = await store.getCatchupUrl(channel.id, minutes, catchupStamp(programme.s));
+
+    player.init();
+    player.setPlaylist([], null);
+    await player.play({
+      type: 'catchup',
+      streamType: 'live',
+      id: channel.id,
+      title: programme.t,
+      subtitle: `${tidyChannelName(channel.name)} · recorded ${new Date(programme.s).toLocaleString([], {
+        weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit'
+      })}`,
+      cover: channel.logo,
+      live: false,
+      url,
+      ext: store.state.settings.liveFormat || 'ts',
+      progressKey: progressKey('catchup', channel.id, String(programme.s))
+    });
+  } catch (err) {
+    toastErr('Could not start catch-up', err.message);
   }
 }
 

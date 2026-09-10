@@ -78,6 +78,13 @@ contextBridge.exposeInMainWorld('aurum', {
     accountInfo: () => invoke('xtream:accountInfo')
   },
 
+  tmdb: {
+    status: () => invoke('tmdb:status'),
+    setKey: (key, language) => invoke('tmdb:setKey', { key, language }),
+    enrich: (kind, id, title, year, force) => invoke('tmdb:enrich', { kind, id, title, year, force }),
+    clear: () => invoke('tmdb:clear')
+  },
+
   epg: {
     status: () => invoke('epg:status'),
     refresh: (force) => invoke('epg:refresh', { force }),

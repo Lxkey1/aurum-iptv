@@ -241,6 +241,17 @@ export async function searchCatalogue(term, limit = 60) {
 
 export const fetchArchiveChannels = (limit) => call(api.catalogue.archiveChannels(limit));
 
+// ------------------------------------------------------------ enrichment
+
+export const tmdbStatus = () => call(api.tmdb.status());
+export const tmdbSetKey = (key, language) => call(api.tmdb.setKey(key, language));
+export const tmdbClear = () => call(api.tmdb.clear());
+
+/** Enrich a title on demand. Resolves null when TMDB is off or finds nothing. */
+export function tmdbEnrich(kind, id, title, year, force = false) {
+  return call(api.tmdb.enrich(kind, id, title, year, force)).catch(() => null);
+}
+
 // ------------------------------------------------------- channel management
 
 export async function setChannelsHidden(ids, hidden) {

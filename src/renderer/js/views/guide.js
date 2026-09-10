@@ -10,7 +10,7 @@ import { h, icon, clear } from '../util/dom.js';
 import { timeHM, relativeDay, debounce, tidyChannelName, plainText } from '../util/format.js';
 import { logoNode } from '../ui/cards.js';
 import { emptyState, toast, toastErr, openModal, closeModal } from '../ui/feedback.js';
-import { playChannel } from '../playback.js';
+import { playChannel, playCatchup } from '../playback.js';
 import * as store from '../state.js';
 
 const LANE_H = 62;
@@ -441,6 +441,10 @@ function programmeBlock(p, channel, startMs, pxPerMin) {
 function openProgramme(p, channel) {
   const now = Date.now();
   const live = p.s <= now && p.e > now;
+  const ended = p.e <= now;
+  // Catch-up only exists for a programme that has aired, on a channel whose
+  // provider actually keeps an archive.
+  const canCatchUp = ended && Boolean(channel.archive);
   const mins = Math.round((p.e - p.s) / 60000);
 
   openModal(
@@ -452,7 +456,8 @@ function openProgramme(p, channel) {
         { style: { marginBottom: '14px' } },
         live ? h('span.badge.badge--live', h('span.dot'), 'On now') : h('span.badge', relativeDay(p.s)),
         h('span.badge', `${mins} min`),
-        p.c ? h('span.badge', p.c) : null
+        p.c ? h('span.badge', p.c) : null,
+        channel.archive ? h('span.badge.badge--gold', 'Catch-up') : null
       ),
       h('h2', { style: { fontSize: '23px', marginBottom: '6px' } }, p.t),
       h('p.dim', { style: { fontSize: '13px', marginBottom: '18px' } },
@@ -461,10 +466,23 @@ function openProgramme(p, channel) {
         ? h('p.muted', { style: { fontSize: '13.5px', lineHeight: '1.65' } }, plainText(p.d))
         : h('p.dim', { style: { fontSize: '13px' } }, 'No description was supplied for this programme.'),
       h(
-        'div.row.gap-3',
+        'div.row.gap-3.wrap',
         { style: { marginTop: '26px' } },
+        canCatchUp
+          ? h(
+              'button.btn.btn--primary',
+              {
+                onclick: () => {
+                  closeModal();
+                  playCatchup(channel, p);
+                }
+              },
+              icon('history', 16),
+              'Watch from start'
+            )
+          : null,
         h(
-          'button.btn.btn--primary',
+          `button.btn${canCatchUp ? '' : '.btn--primary'}`,
           {
             onclick: () => {
               closeModal();
@@ -475,7 +493,11 @@ function openProgramme(p, channel) {
           live ? 'Watch now' : 'Go to channel'
         ),
         h('button.btn.btn--ghost', { onclick: closeModal }, 'Close')
-      )
+      ),
+      ended && !channel.archive
+        ? h('p.dim', { style: { fontSize: '12px', marginTop: '14px' } },
+            'This channel does not offer catch-up, so this programme can no longer be watched.')
+        : null
     ),
     { small: true }
   );
